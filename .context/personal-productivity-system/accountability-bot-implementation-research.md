@@ -112,48 +112,15 @@ This research documents the current state of Zachary's existing infrastructure a
 
 ---
 
-## Decision Points: Still Open
+## Decision Points: All Resolved (2026-03-14)
 
-### 1. HTTPS for Telegram Webhook
-
-Telegram webhooks require HTTPS. remote-claude uses polling (no HTTPS needed). The accountability bot spec says webhook mode.
-
-**Options:**
-- **A: Use nginx reverse proxy on Hetzner** — If there's already nginx on the VPS for other services, add a server block for the bot domain/subdomain. Route HTTPS to localhost:8001.
-- **B: Use Telegram's self-signed certificate** — Telegram supports self-signed certs for webhooks. No nginx needed. Pass cert in `set_webhook()` call.
-- **C: Switch to polling mode** — Like remote-claude. Simpler. No HTTPS needed. APScheduler still works. Trade-off: slightly higher latency on messages.
-- **D: Use Cloudflare tunnel** — If other services already use Cloudflare.
-
-**What to check on VPS:** Is nginx already installed? Are there existing HTTPS certs? What domain(s) point to this VPS?
-
-**Note:** remote-claude uses polling (`app.run_polling()`), not webhooks. The webhook.py file is for *GitHub* deploy webhooks (port 9000, HTTP, not HTTPS), not Telegram. So there may not be any HTTPS setup on this VPS.
-
-**Recommendation:** Start with **polling mode** (Option C) to match remote-claude's pattern and avoid HTTPS complexity. Webhook mode is marginally better for production but polling is fine for a single-user bot. Can switch later.
-
-### 2. Railway Postgres: New Database or New Service?
-
-contacts_ai already uses Railway Postgres. The accountability bot needs its own.
-
-**Options:**
-- **A: Add second Postgres service to same Railway project** — Separate database, same billing. Clean separation.
-- **B: Add tables to contacts_ai's database** — Shares the same DB. Simpler but couples the projects.
-- **C: New Railway project with its own Postgres** — Complete isolation.
-
-**Recommendation:** Option A (new Postgres service, same project). Keeps billing simple, databases isolated.
-
-### 3. Notion Database: Create New or Use Existing?
-
-**Need to check:** Does Zachary already have a Notion tasks database? The spec defines a specific schema (Name, Status, Priority, Project, Due Date, Committed Today, Notes).
-
-### 4. Telegram Bot: New Bot or Reuse?
-
-**Need:** A separate bot from remote-claude (different @username, different token from BotFather).
-
-### 5. Conversation History Persistence
-
-The spec says in-memory state for MVP, but check-in history (Phase 6) requires 7 days of context. In-memory state is lost on restart.
-
-**Resolution:** CheckIn table in Postgres stores all check-in summaries. Conversation history for Claude context can be rebuilt from the DB. In-memory state only needs current session (what mode are we in, what's pending confirmation). This is fine — restarts just reset to "idle" mode.
+| Decision | Answer | Rationale |
+|---|---|---|
+| Polling vs. webhook? | **Polling** | Matches remote-claude pattern, no HTTPS setup needed, fine for single-user |
+| Railway Postgres setup? | **New Railway project with Postgres** | Fresh setup, clean isolation |
+| Notion database? | **Create fresh** | New tasks database with the spec's schema |
+| Telegram bot? | **New bot via @BotFather** | Separate from remote-claude |
+| Conversation persistence? | **In-memory state for mode, Postgres for history** | CheckIn table stores summaries. Restart just resets to idle mode. |
 
 ---
 
@@ -170,7 +137,7 @@ The spec says in-memory state for MVP, but check-in history (Phase 6) requires 7
 | Notion integration | Create at notion.so/my-integrations, share with tasks DB | Zachary (manual, 3 minutes) |
 | Notion tasks database | Create with required schema (or verify existing) | Zachary (manual, 5 minutes) |
 | VPS access | SSH to root@95.217.217.145 | Already have |
-| Domain/HTTPS (if webhook mode) | nginx + cert setup on VPS | Skip if using polling mode |
+| Domain/HTTPS | Not needed — using polling mode | N/A |
 
 ### Before Deployment
 
