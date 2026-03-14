@@ -408,6 +408,94 @@ Based on the constraints (both devices, $20-50/mo, sellable, speed to capture + 
 
 ---
 
+## Existing Infrastructure: What Zachary Already Has
+
+### remote-claude (Telegram Bot → Claude Code)
+
+Zachary already has a working Telegram bot on a Hetzner VPS that pipes messages to Claude Code via `claude -p` subprocess. This is a significant piece of existing infrastructure.
+
+**What it does:**
+- Telegram bot receives messages (text, photos, documents)
+- Pipes them to `claude -p` with `--output-format stream-json`
+- Supports multiple named sessions with independent CWD and conversation history
+- Shows tool progress in real-time (edits a single message with tool names)
+- Handles images and files (saves to CWD, passes to Claude, cleans up)
+- Auto-deploy via GitHub webhook → `deploy.sh` on VPS
+- Single authorized user (user ID check)
+
+**Tech:** Python, `python-telegram-bot` v21, polling mode, `telegramify-markdown` for rendering, sessions stored in `sessions.json`.
+
+**VPS also hosts deploy webhooks for:** calida, astrology-ai, coaching-ai, contacts-ai (5 projects total).
+
+**Key file:** `/Users/zacharyneumann/code/remote-claude/bot.py` (589 lines) — the full bot implementation.
+
+### Accountability Bot Spec (Provided by Zachary)
+
+Zachary has a detailed spec for a **Telegram Accountability Bot** that acts as an AI accountability partner. This is essentially a more focused, purpose-built version of the productivity system concept.
+
+**Stack defined in spec:**
+- Python 3.11+ / FastAPI
+- python-telegram-bot v20+ (async)
+- Anthropic Claude API (claude-sonnet-4-6) — direct API calls, not `claude -p`
+- Notion API as task database
+- APScheduler for morning/evening check-ins
+- Hetzner VPS (existing) with systemd
+- In-memory state (dict) for MVP, Redis/Postgres later
+
+**5 phases defined:**
+1. **Foundation:** Telegram webhook, auth, Claude API + Notion API connected
+2. **Morning Check-In:** APScheduler fires → pull incomplete tasks from Notion → Claude picks top 3 → sends to user → user confirms → logs to Notion
+3. **Evening Check-In:** Pull committed tasks → ask what happened → Claude parses completion → logs status → calls out avoidance patterns (3+ days)
+4. **Brain Dump:** Any unscheduled message → Claude extracts tasks, people, ideas, commitments → user confirms → creates in Notion
+5. **Memory & Patterns:** Store 7 days of conversation history → Claude surfaces patterns
+
+**Notion database schema defined:**
+- Name (title), Status (Not started / In progress / Done / Avoided), Priority (High / Medium / Low), Project (select), Due Date, Committed Today (checkbox), Notes (text)
+
+**System prompts designed for:**
+- Morning check-in: "accountability partner for someone with ADHD building multiple products and a music career"
+- Evening check-in: honest but supportive, detects avoidance patterns
+- Brain dump extraction: returns structured JSON (tasks, people, ideas, commitments)
+
+**Sellable version notes:** Add auth (Clerk/Supabase), Notion OAuth, move state to Postgres, add Stripe, onboarding flow. Target: "$15-25/month SaaS."
+
+### How This Changes the Analysis
+
+The accountability bot spec is a **concrete, buildable MVP** that sits between the research options. Key observations:
+
+1. **Notion as database is already chosen** for the accountability bot — this aligns with Option 1 (Notion API Backend) from the stack analysis. Quick to build, but limits sellability.
+
+2. **Telegram as the interface** eliminates the need for a web frontend initially. Voice notes can be sent directly via Telegram voice messages. This dramatically simplifies the MVP.
+
+3. **The remote-claude bot already solves general-purpose Telegram → Claude interaction.** The accountability bot is a specialized version with scheduled check-ins, Notion integration, and structured prompts.
+
+4. **Two possible paths forward:**
+
+   **Path A: Build accountability bot as specified (Telegram + Notion + Claude API)**
+   - Fastest to MVP (days, not weeks)
+   - Telegram handles both phone and laptop
+   - Notion handles task storage with existing UI as fallback
+   - Voice notes via Telegram voice messages → can add Groq STT later
+   - Limited by Notion API (3 req/sec, no webhooks, no embeddings)
+   - Sellable as a Telegram bot SaaS ($15-25/mo)
+
+   **Path B: Build the full web app (Next.js + Supabase) with Telegram as one channel**
+   - Slower to MVP (weeks)
+   - More powerful: embeddings, custom data model, real-time
+   - Telegram bot becomes one input channel alongside web/PWA
+   - More sellable long-term (web app > Telegram bot for most users)
+   - Can start with Path A and migrate to Path B later
+
+   **Path C: Extend remote-claude with accountability features**
+   - Add scheduled messages and Notion integration to the existing bot
+   - Leverage existing session management and deployment infrastructure
+   - Lowest effort — build on what works
+   - But: conflates general-purpose Claude bot with accountability-specific logic
+
+5. **The "contacts-ai" project on the VPS** may be the prior "cortext" concept mentioned earlier. This could inform the people/CRM dimension.
+
+---
+
 ## Complexity Estimate
 
 - **Files to modify:** 0 (greenfield project)
