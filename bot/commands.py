@@ -5,8 +5,7 @@ from telegram import Update
 
 logger = logging.getLogger(__name__)
 
-# Command definitions: (prefix, handler_name, requires_args)
-# Handler functions are defined below; lookup happens in route_command.
+# Prefix table for fast-path matching (no API call needed)
 _COMMAND_TABLE = [
     ("help", "cmd_help", False),
     ("list", "cmd_list", False),
@@ -18,27 +17,30 @@ _COMMAND_TABLE = [
     ("delete", "cmd_delete", True),
     ("del", "cmd_delete", True),
     ("people", "cmd_people", False),
+    ("dump", "_dump", True),
 ]
 
 
 async def route_command(text: str, update: Update, state: dict) -> bool:
-    """Try to match text as a command. Returns True if handled."""
+    """Route user message to the right handler.
+
+    Fast path: exact prefix match (e.g. "done 3", "list all").
+    Slow path: Claude classifies intent (e.g. "show me my Thrown tasks").
+    Returns True if handled (not chat).
+    """
     lower = text.strip().lower()
 
-    # Explicit dump trigger
-    if lower.startswith("dump ") or lower == "dump":
-        raw = text.strip()[4:].strip() if lower.startswith("dump ") else ""
-        if raw:
-            await _handle_dump(raw, update)
-        else:
-            await update.message.reply_text("Send /dump followed by your brain dump text.")
-        return True
-
-    # Match known commands
+    # Fast path: prefix match
     handlers = {name: func for name, func in globals().items() if name.startswith("cmd_")}
     for prefix, handler_name, requires_args in _COMMAND_TABLE:
         if lower == prefix or lower.startswith(prefix + " "):
             args = text.strip()[len(prefix):].strip()
+            if prefix == "dump":
+                if args:
+                    await _handle_dump(args, update)
+                else:
+                    await update.message.reply_text("Send /dump followed by your brain dump text.")
+                return True
             if requires_args and not args:
                 await update.message.reply_text(f"Usage: /{prefix} ...")
                 return True
@@ -46,11 +48,73 @@ async def route_command(text: str, update: Update, state: dict) -> bool:
             await handler(args, update, state)
             return True
 
-    return False
+    # Slow path: Claude intent classification
+    return await _classify_and_dispatch(text, update, state)
+
+
+async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool:
+    """Use Claude to classify intent and dispatch to handler."""
+    from services.claude import classify_intent
+
+    # Get project names for fuzzy matching
+    projects = await _get_project_names()
+
+    try:
+        result = classify_intent(text, projects, state.get("task_map", {}))
+    except Exception:
+        logger.exception("Intent classification failed")
+        return False  # Fall through to chat
+
+    intent = result.get("intent", "chat")
+
+    if intent == "chat":
+        return False
+
+    if intent == "help":
+        await cmd_help("", update, state)
+    elif intent == "list":
+        args = ""
+        if result.get("show_all"):
+            args = "all"
+        elif result.get("project"):
+            args = result["project"]
+        await cmd_list(args, update, state)
+    elif intent == "done":
+        await cmd_done(str(result.get("num", "")), update, state)
+    elif intent == "doing":
+        await cmd_doing(str(result.get("num", "")), update, state)
+    elif intent == "add":
+        await _cmd_add_structured(result, update, state)
+    elif intent == "edit":
+        await _cmd_edit_structured(result, update, state)
+    elif intent == "delete":
+        await cmd_delete(str(result.get("num", "")), update, state)
+    elif intent == "people":
+        await cmd_people("", update, state)
+    elif intent == "dump":
+        dump_text = result.get("text", text)
+        await _handle_dump(dump_text, update)
+    else:
+        return False
+
+    return True
+
+
+async def _get_project_names() -> list[str]:
+    """Get distinct project names from the database."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from sqlalchemy import select, distinct
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(distinct(Task.project)).where(Task.project.isnot(None))
+        )
+        return [row[0] for row in result.all()]
 
 
 async def _handle_dump(text: str, update: Update):
-    """Process brain dump extraction (moved from default flow)."""
+    """Process brain dump extraction."""
     from services.claude import extract_from_dump
     from bot.state import set_pending
     from bot.handlers import format_extracted
@@ -75,24 +139,21 @@ async def _handle_dump(text: str, update: Update):
 
 async def cmd_help(args: str, update: Update, state: dict):
     """Show available commands."""
-    text = """Commands (slash or plain text):
+    text = """You can talk to me naturally or use commands:
 
-/list — open tasks grouped by project
-/list all — include done tasks
-/list [project] — filter by project
-/done N — mark task #N as done
-/doing N — mark task #N as in progress
-/add [title] — quick-add a task
-  options: p:high proj:Name due:YYYY-MM-DD
-/edit N field: value — edit a task
-  fields: title, priority, project, due, notes
-/delete N — remove a task
-/people — list tracked people
-/dump [text] — brain dump extraction
-/help — this message
+"show my tasks" or /list
+"show all tasks for Thrown" or /list Thrown
+"mark 3 as done" or /done 3
+"I'm working on 2" or /doing 2
+"add buy groceries due Friday" or /add ...
+"change 1 priority to high" or /edit 1 priority: high
+"delete 3" or /delete 3
+"who do I need to follow up with?" or /people
+"dump I need to call Sarah and finish slides" or /dump ...
 
-Numbers refer to the last /list output.
-All commands work without the slash too."""
+I understand natural language, relative dates ("Friday", "end of the week"), and fuzzy project names.
+
+Task numbers come from the last list you pulled up."""
     await update.message.reply_text(text)
 
 
@@ -190,7 +251,7 @@ async def _set_status(args: str, status: str, update: Update, state: dict):
 
 
 async def cmd_add(args: str, update: Update, state: dict):
-    """Quick-add a task. Usage: add Buy groceries p:high proj:Home due:2026-03-15"""
+    """Quick-add a task from prefix syntax. Usage: add Buy groceries p:high proj:Home due:2026-03-15"""
     from database.connection import AsyncSessionLocal
     from database.models import Task
     from services.notion import push_task
@@ -231,6 +292,34 @@ async def cmd_add(args: str, update: Update, state: dict):
         await update.message.reply_text("Task needs a title.")
         return
 
+    await _create_task(title, priority, project, due_date, update)
+
+
+async def _cmd_add_structured(result: dict, update: Update, state: dict):
+    """Add a task from Claude-classified intent."""
+    title = result.get("title", "").strip()
+    if not title:
+        await update.message.reply_text("Couldn't figure out the task title. Try again?")
+        return
+
+    priority = result.get("priority", "medium")
+    project = result.get("project")
+    due_date = None
+    if result.get("due"):
+        try:
+            due_date = datetime.strptime(result["due"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+    await _create_task(title, priority, project, due_date, update)
+
+
+async def _create_task(title: str, priority: str, project: str | None, due_date: datetime | None, update: Update):
+    """Shared task creation logic."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from services.notion import push_task
+
     async with AsyncSessionLocal() as session:
         task = Task(
             title=title,
@@ -257,7 +346,7 @@ async def cmd_add(args: str, update: Update, state: dict):
 
 
 async def cmd_edit(args: str, update: Update, state: dict):
-    """Edit a task field. Usage: edit N title: New Title"""
+    """Edit a task field from prefix syntax. Usage: edit N title: New Title"""
     from database.connection import AsyncSessionLocal
     from database.models import Task
     from services.notion import push_task
@@ -283,6 +372,34 @@ async def cmd_edit(args: str, update: Update, state: dict):
 
     field = field_match.group(1).lower()
     value = field_match.group(2).strip()
+
+    await _apply_edit(num, task_id, field, value, update)
+
+
+async def _cmd_edit_structured(result: dict, update: Update, state: dict):
+    """Edit a task from Claude-classified intent."""
+    num = str(result.get("num", ""))
+    task_id = state.get("task_map", {}).get(num)
+    if not task_id:
+        await update.message.reply_text(f"No task #{num}. Use /list first.")
+        return
+
+    field = result.get("field", "")
+    value = result.get("value", "")
+
+    if not field or not value:
+        await update.message.reply_text("Couldn't figure out what to change. Try: /edit N field: value")
+        return
+
+    await _apply_edit(num, task_id, field, value, update)
+
+
+async def _apply_edit(num: str, task_id: str, field: str, value: str, update: Update):
+    """Shared edit logic."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from services.notion import push_task
+    from sqlalchemy import select
 
     allowed = {"title", "priority", "project", "due", "notes"}
     if field not in allowed:
