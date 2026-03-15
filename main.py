@@ -34,7 +34,7 @@ async def start_telegram():
         .build()
     )
     # Slash commands
-    for cmd in ["list", "tasks", "done", "doing", "add", "edit", "delete", "del", "people", "dump"]:
+    for cmd in ["help", "list", "tasks", "done", "doing", "add", "edit", "delete", "del", "people", "dump"]:
         telegram_app.add_handler(CommandHandler(cmd, handle_slash_command))
 
     telegram_app.add_handler(

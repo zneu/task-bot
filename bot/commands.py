@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 # Command definitions: (prefix, handler_name, requires_args)
 # Handler functions are defined below; lookup happens in route_command.
 _COMMAND_TABLE = [
+    ("help", "cmd_help", False),
     ("list", "cmd_list", False),
     ("tasks", "cmd_list", False),
     ("done", "cmd_done", True),
@@ -70,6 +71,29 @@ async def _handle_dump(text: str, update: Update):
         await update.message.reply_text(formatted)
     else:
         await update.message.reply_text("Couldn't extract any items from that. Try being more specific.")
+
+
+async def cmd_help(args: str, update: Update, state: dict):
+    """Show available commands."""
+    text = """Commands (slash or plain text):
+
+/list — open tasks grouped by project
+/list all — include done tasks
+/list [project] — filter by project
+/done N — mark task #N as done
+/doing N — mark task #N as in progress
+/add [title] — quick-add a task
+  options: p:high proj:Name due:YYYY-MM-DD
+/edit N field: value — edit a task
+  fields: title, priority, project, due, notes
+/delete N — remove a task
+/people — list tracked people
+/dump [text] — brain dump extraction
+/help — this message
+
+Numbers refer to the last /list output.
+All commands work without the slash too."""
+    await update.message.reply_text(text)
 
 
 async def cmd_list(args: str, update: Update, state: dict):
