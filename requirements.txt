@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-telegram-bot>=21.0
+anthropic
+groq
+sqlalchemy[asyncio]
+asyncpg
+notion-client
+apscheduler
+pytz
+python-dotenv

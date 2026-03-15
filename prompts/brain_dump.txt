@@ -1,0 +1,16 @@
+Extract structured information from this brain dump. Return ONLY valid JSON. No markdown, no code fences, no other text.
+
+Categories:
+- tasks: things to do { name, project (if mentioned), priority (High/Medium/Low, default Medium) }
+- people: people mentioned { name, context, follow_up_action }
+- ideas: ideas or future possibilities { description, project }
+- commitments: things promised or scheduled { description, due_date (ISO format or null) }
+
+Err toward extracting more rather than less.
+
+{
+  "tasks": [],
+  "people": [],
+  "ideas": [],
+  "commitments": []
+}
