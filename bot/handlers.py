@@ -2,7 +2,7 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
-from services.claude import chat, extract_from_dump
+from services.claude import chat
 from services.groq import transcribe_voice
 from bot.state import get_state, set_pending, clear_pending, add_to_history
 
@@ -61,25 +61,17 @@ async def process_input(text: str, update: Update, source: str = "text"):
         await handle_evening_response(text, update)
         return
 
-    # Try to extract structured items
-    try:
-        items = extract_from_dump(text)
-        has_items = any(items.get(k) for k in ["tasks", "people", "ideas", "commitments"])
-    except Exception:
-        logger.exception("Extraction failed, falling back to chat")
-        has_items = False
-        items = None
+    # Try command routing first
+    from bot.commands import route_command
+    handled = await route_command(text, update, state)
+    if handled:
+        return
 
-    if has_items:
-        set_pending(user_id, items)
-        formatted = format_extracted(items)
-        await update.message.reply_text(formatted)
-    else:
-        # Nothing to extract — just chat
-        response = chat(text, state["conversation_history"])
-        add_to_history(user_id, "user", text)
-        add_to_history(user_id, "assistant", response)
-        await update.message.reply_text(response)
+    # Default: chat
+    response = chat(text, state["conversation_history"])
+    add_to_history(user_id, "user", text)
+    add_to_history(user_id, "assistant", response)
+    await update.message.reply_text(response)
 
 
 async def handle_confirmation(text: str, update: Update):
@@ -293,6 +285,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await process_input(text, update, source="text")
+
+
+async def handle_slash_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return
+
+    # Reconstruct "command args" text from the slash command
+    text = update.message.text  # e.g. "/list all"
+    command_text = text.lstrip("/")
+
+    user_id = str(update.effective_user.id)
+    state = get_state(user_id)
+
+    from bot.commands import route_command
+    await route_command(command_text, update, state)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):

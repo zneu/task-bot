@@ -45,3 +45,13 @@ def push_task(task) -> str | None:
     except Exception:
         logger.exception(f"Failed to sync task '{task.title}' to Notion")
         return None
+
+
+def archive_task(notion_id: str) -> bool:
+    """Archive a task in Notion. Returns True on success."""
+    try:
+        notion.pages.update(page_id=notion_id, archived=True)
+        return True
+    except Exception:
+        logger.exception(f"Failed to archive Notion page '{notion_id}'")
+        return False

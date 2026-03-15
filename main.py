@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI
-from telegram.ext import Application, MessageHandler, filters
-from bot.handlers import handle_message, handle_voice
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from bot.handlers import handle_message, handle_voice, handle_slash_command
 from database.connection import init_db
 from bot.scheduler import start_scheduler
 
@@ -33,6 +33,10 @@ async def start_telegram():
         .token(os.getenv("TELEGRAM_BOT_TOKEN"))
         .build()
     )
+    # Slash commands
+    for cmd in ["list", "tasks", "done", "doing", "add", "edit", "delete", "del", "people", "dump"]:
+        telegram_app.add_handler(CommandHandler(cmd, handle_slash_command))
+
     telegram_app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )

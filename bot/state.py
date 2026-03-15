@@ -8,6 +8,7 @@ def get_state(user_id: str) -> dict:
             "committed_task_ids": [],
             "conversation_history": [],
             "pending_items": None,
+            "task_map": {},
         }
     return user_states[user_id]
 
