@@ -31,6 +31,9 @@ async def route_command(text: str, update: Update, state: dict) -> bool:
     """
     lower = text.strip().lower()
 
+    # Auto-populate task_map if empty
+    await _ensure_task_map(state)
+
     # Fast path: prefix match (only for clean, simple commands)
     # Skip fast path if args contain "and" — likely a compound command for Claude
     handlers = {name: func for name, func in globals().items() if name.startswith("cmd_")}
@@ -84,6 +87,9 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
     if len(intents) == 1 and intents[0].get("intent") == "chat":
         return False
 
+    # Ensure task_map is populated before dispatching
+    await _ensure_task_map(state)
+
     for intent_data in intents:
         await _dispatch_single_intent(intent_data, text, update, state)
 
@@ -128,6 +134,25 @@ async def _dispatch_single_intent(result: dict, text: str, update: Update, state
     elif intent == "dump":
         dump_text = result.get("text", text)
         await _handle_dump(dump_text, update)
+
+
+async def _ensure_task_map(state: dict):
+    """Auto-populate task_map if empty, so commands work without /list first."""
+    if state.get("task_map"):
+        return
+
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Task).where(Task.status.notin_(["done"]))
+            .order_by(Task.project, Task.created_at)
+        )
+        tasks = result.scalars().all()
+
+    state["task_map"] = {str(i + 1): t.id for i, t in enumerate(tasks)}
 
 
 async def _get_task_context() -> tuple[list[str], str]:
