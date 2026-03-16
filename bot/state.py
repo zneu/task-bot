@@ -5,16 +5,11 @@ def get_state(user_id: str) -> dict:
     if user_id not in user_states:
         user_states[user_id] = {
             "mode": "idle",
-            "committed_task_ids": [],
             "conversation_history": [],
             "pending_items": None,
             "task_map": {},
         }
     return user_states[user_id]
-
-
-def set_mode(user_id: str, mode: str):
-    get_state(user_id)["mode"] = mode
 
 
 def set_pending(user_id: str, items: dict):

@@ -21,7 +21,6 @@ class Task(Base):
     priority = Column(String, default="medium")
     project = Column(String, nullable=True)
     due_date = Column(TIMESTAMP(timezone=True), nullable=True)
-    committed_today = Column(Boolean, default=False)
     notes = Column(Text, nullable=True)
     notion_id = Column(String, nullable=True)
     avoided_count = Column(Integer, default=0)

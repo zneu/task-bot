@@ -22,7 +22,6 @@ def push_task(task) -> str | None:
             "Name": {"title": [{"text": {"content": task.title}}]},
             "Status": {"select": {"name": status_map.get(task.status, "Not Started")}},
             "Priority": {"select": {"name": task.priority.title()}},
-            "Committed Today": {"checkbox": task.committed_today},
         }
         if task.project:
             properties["Project"] = {"select": {"name": task.project}}

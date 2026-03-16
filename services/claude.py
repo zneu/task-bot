@@ -149,28 +149,3 @@ Rules:
     return json.loads(raw.strip())
 
 
-async def get_checkin_context() -> str:
-    """Pull last 7 days of check-ins for Claude context."""
-    from database.connection import AsyncSessionLocal
-    from database.models import CheckIn
-    from sqlalchemy import select
-    from datetime import datetime, timedelta, timezone
-
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(CheckIn)
-            .where(CheckIn.created_at >= week_ago)
-            .order_by(CheckIn.created_at)
-        )
-        checkins = result.scalars().all()
-
-    if not checkins:
-        return "No check-in history yet."
-
-    lines = ["Check-in history (last 7 days):"]
-    for c in checkins:
-        date = c.created_at.strftime("%a %m/%d")
-        lines.append(f"  [{date}] {c.type}: {c.summary or 'No summary'}")
-    return "\n".join(lines)
