@@ -37,7 +37,7 @@ def format_extracted(items: dict) -> str:
         for c in items["commitments"]:
             due = f" (by {c.get('due_date')})" if c.get("due_date") else ""
             lines.append(f"  - {c['description']}{due}")
-    lines.append("\nSave these? (yes/no)")
+    lines.append("")  # trailing newline before buttons
     return "\n".join(lines)
 
 
@@ -67,8 +67,13 @@ async def process_input(text: str, update: Update, source: str = "text"):
     if handled:
         return
 
-    # Default: chat
-    response = chat(text, state["conversation_history"])
+    # Default: chat (with task context)
+    from bot.commands import _get_task_context, _get_people_names
+    _, task_context = await _get_task_context()
+    people = await _get_people_names()
+    context_msg = f"[Current open tasks:\n{task_context}\nTracked people: {', '.join(people) if people else 'none'}]"
+    enriched_history = [{"role": "user", "content": context_msg}, {"role": "assistant", "content": "Got it, I have your current task and people context."}] + state["conversation_history"]
+    response = chat(text, enriched_history)
     add_to_history(user_id, "user", text)
     add_to_history(user_id, "assistant", response)
     await update.message.reply_text(response)
@@ -91,8 +96,11 @@ async def handle_confirmation(text: str, update: Update):
         await update.message.reply_text("Reply yes to save or no to discard.")
 
 
-async def save_items(items: dict, update: Update):
-    """Save extracted items to Postgres and sync to Notion."""
+async def save_items(items: dict, reply_target):
+    """Save extracted items to Postgres and sync to Notion.
+
+    reply_target: Update (has .message.reply_text) or CallbackQuery (has .message.reply_text)
+    """
     from database.connection import AsyncSessionLocal
     from database.models import Task, Person, Capture
     from services.notion import push_task
@@ -147,7 +155,9 @@ async def save_items(items: dict, update: Update):
     if saved_people:
         parts.append(f"{saved_people} person(s)")
     summary = " and ".join(parts)
-    await update.message.reply_text(f"Saved {summary}.")
+    # Get the reply method — works for both Update and CallbackQuery
+    message = getattr(reply_target, 'message', reply_target)
+    await message.reply_text(f"Saved {summary}.")
 
 
 async def handle_morning_response(text: str, update: Update):
@@ -300,6 +310,39 @@ async def handle_slash_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     from bot.commands import route_command
     await route_command(command_text, update, state)
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard button presses."""
+    query = update.callback_query
+    if not query or str(query.from_user.id) != AUTHORIZED_USER_ID:
+        return
+
+    await query.answer()
+
+    data = query.data
+
+    if data.startswith("done:") or data.startswith("doing:"):
+        action, num = data.split(":", 1)
+        user_id = str(query.from_user.id)
+        state = get_state(user_id)
+        status = "done" if action == "done" else "in_progress"
+        from bot.commands import _set_status_from_callback
+        await _set_status_from_callback(num, status, query.message, state)
+
+    elif data == "save_dump":
+        user_id = str(query.from_user.id)
+        state = get_state(user_id)
+        if state["pending_items"]:
+            await save_items(state["pending_items"], query)
+            clear_pending(user_id)
+        else:
+            await query.message.reply_text("Nothing to save.")
+
+    elif data == "discard_dump":
+        user_id = str(query.from_user.id)
+        clear_pending(user_id)
+        await query.message.reply_text("Discarded.")
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):

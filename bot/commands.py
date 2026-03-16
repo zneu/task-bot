@@ -1,7 +1,7 @@
 import logging
 import re
 from datetime import datetime, timezone
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +56,12 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
     """Use Claude to classify intent and dispatch to handler."""
     from services.claude import classify_intent
 
-    # Get project names for fuzzy matching
-    projects = await _get_project_names()
+    # Get full task and people context for Claude
+    projects, task_context = await _get_task_context()
+    people = await _get_people_names()
 
     try:
-        result = classify_intent(text, projects, state.get("task_map", {}))
+        result = classify_intent(text, projects, state.get("task_map", {}), task_context, people)
     except Exception:
         logger.exception("Intent classification failed")
         return False  # Fall through to chat
@@ -100,16 +101,47 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
     return True
 
 
-async def _get_project_names() -> list[str]:
-    """Get distinct project names from the database."""
+async def _get_task_context() -> tuple[list[str], str]:
+    """Get project names and a formatted task context string for Claude."""
     from database.connection import AsyncSessionLocal
     from database.models import Task
     from sqlalchemy import select, distinct
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
+            select(Task).where(Task.status.in_(["not_started", "in_progress"]))
+            .order_by(Task.project, Task.created_at)
+        )
+        tasks = result.scalars().all()
+
+        proj_result = await session.execute(
             select(distinct(Task.project)).where(Task.project.isnot(None))
         )
+        projects = [row[0] for row in proj_result.all()]
+
+    if not tasks:
+        return projects, "No open tasks."
+
+    lines = []
+    for t in tasks:
+        parts = [t.title, f"status:{t.status}", f"priority:{t.priority}"]
+        if t.project:
+            parts.append(f"project:{t.project}")
+        if t.due_date:
+            parts.append(f"due:{t.due_date.strftime('%Y-%m-%d')}")
+        lines.append(f"  - {' | '.join(parts)}")
+
+    return projects, "\n".join(lines)
+
+
+async def _get_people_names() -> list[str]:
+    """Get tracked people names from the database."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Person
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Person.name))
         return [row[0] for row in result.all()]
 
 
@@ -132,7 +164,13 @@ async def _handle_dump(text: str, update: Update):
     if has_items:
         set_pending(user_id, items)
         formatted = format_extracted(items)
-        await update.message.reply_text(formatted)
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Save", callback_data="save_dump"),
+                InlineKeyboardButton("Discard", callback_data="discard_dump"),
+            ]
+        ])
+        await update.message.reply_text(formatted, reply_markup=keyboard)
     else:
         await update.message.reply_text("Couldn't extract any items from that. Try being more specific.")
 
@@ -210,7 +248,20 @@ async def cmd_list(args: str, update: Update, state: dict):
     state["task_map"] = task_map
 
     header = "All tasks:" if show_all else "Open tasks:"
-    await update.message.reply_text(f"{header}\n\n" + "\n".join(lines))
+    text = f"{header}\n\n" + "\n".join(lines)
+
+    # Build inline keyboard: Done/Doing buttons for open tasks
+    buttons = []
+    for num_str, task_id in task_map.items():
+        task_obj = next((t for t in tasks if t.id == task_id), None)
+        if task_obj and task_obj.status != "done":
+            buttons.append([
+                InlineKeyboardButton(f"Done {num_str}", callback_data=f"done:{num_str}"),
+                InlineKeyboardButton(f"Doing {num_str}", callback_data=f"doing:{num_str}"),
+            ])
+
+    reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.message.reply_text(text, reply_markup=reply_markup)
 
 
 async def cmd_done(args: str, update: Update, state: dict):
@@ -248,6 +299,32 @@ async def _set_status(args: str, status: str, update: Update, state: dict):
         await session.commit()
         label = "Done" if status == "done" else "In progress"
         await update.message.reply_text(f"{label}: {task.title}")
+
+
+async def _set_status_from_callback(num: str, status: str, message, state: dict):
+    """Set task status from inline keyboard callback (uses message.reply_text)."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from services.notion import push_task
+    from sqlalchemy import select
+
+    task_id = state.get("task_map", {}).get(num)
+    if not task_id:
+        await message.reply_text(f"No task #{num}. Use /list first.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        task = result.scalar_one_or_none()
+        if not task:
+            await message.reply_text("Task not found in database.")
+            return
+
+        task.status = status
+        push_task(task)
+        await session.commit()
+        label = "Done" if status == "done" else "In progress"
+        await message.reply_text(f"{label}: {task.title}")
 
 
 async def cmd_add(args: str, update: Update, state: dict):

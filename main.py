@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from bot.handlers import handle_message, handle_voice, handle_slash_command
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from bot.handlers import handle_message, handle_voice, handle_slash_command, handle_callback
 from database.connection import init_db
 from bot.scheduler import start_scheduler
 
@@ -43,6 +43,7 @@ async def start_telegram():
     telegram_app.add_handler(
         MessageHandler(filters.VOICE, handle_voice)
     )
+    telegram_app.add_handler(CallbackQueryHandler(handle_callback))
 
     await telegram_app.initialize()
     await telegram_app.start()

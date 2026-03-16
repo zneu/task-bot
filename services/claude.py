@@ -46,7 +46,7 @@ def extract_from_dump(text: str) -> dict:
     return json.loads(raw.strip())
 
 
-def classify_intent(text: str, projects: list[str], task_map: dict) -> dict:
+def classify_intent(text: str, projects: list[str], task_map: dict, task_context: str = "", people: list[str] = None) -> dict:
     """Classify user message into a structured intent using Claude.
 
     Returns dict like:
@@ -67,10 +67,17 @@ def classify_intent(text: str, projects: list[str], task_map: dict) -> dict:
             f"  #{k}" for k in sorted(task_map.keys(), key=int)
         )
 
+    people_str = json.dumps(people) if people else "none"
+
     system = f"""You are a task management command parser. Today is {today}.
 
 The user's projects are: {json.dumps(projects) if projects else "none yet"}
 {task_list_str}
+
+Current open tasks:
+{task_context}
+
+Tracked people: {people_str}
 
 Classify the user's message into ONE of these intents and return ONLY valid JSON:
 
@@ -90,6 +97,8 @@ Rules:
 - Resolve ALL relative dates to absolute YYYY-MM-DD using today's date
 - "end of the week" = Friday of this week
 - If ambiguous between dump and add, prefer add for single items, dump for multiple
+- When the user references a task by name/description (not number), match to the closest task title above
+- When the user asks about a person, match to tracked people names fuzzily
 - If the message is clearly just chat/greeting/thanks, return chat
 - Return ONLY the JSON object, no explanation"""
 
