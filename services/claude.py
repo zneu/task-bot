@@ -87,6 +87,7 @@ Classify the user's message into ONE of these intents and return ONLY valid JSON
 - {{"intent": "add", "title": "...", "priority": "high|medium|low", "project": "...", "due": "YYYY-MM-DD"}} — add a new task. Only include fields the user specified. Resolve relative dates (e.g. "Friday" → actual date).
 - {{"intent": "edit", "num": "N", "field": "title|priority|project|due|notes", "value": "..."}} — edit a task field. Resolve relative dates.
 - {{"intent": "delete", "num": "N"}} — delete a task
+- {{"intent": "move", "nums": ["1","3","5"], "project": "..."}} — move tasks to a project. Match project name fuzzily to known projects.
 - {{"intent": "people"}} — list tracked people
 - {{"intent": "dump", "text": "..."}} — user is brain-dumping multiple tasks/ideas/people at once (long, stream-of-consciousness input with multiple items)
 - {{"intent": "help"}} — user wants to know what they can do

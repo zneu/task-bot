@@ -16,6 +16,7 @@ _COMMAND_TABLE = [
     ("edit", "cmd_edit", True),
     ("delete", "cmd_delete", True),
     ("del", "cmd_delete", True),
+    ("move", "cmd_move", True),
     ("people", "cmd_people", False),
     ("dump", "_dump", True),
 ]
@@ -90,6 +91,14 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
         await _cmd_edit_structured(result, update, state)
     elif intent == "delete":
         await cmd_delete(str(result.get("num", "")), update, state)
+    elif intent == "move":
+        nums = result.get("nums", [])
+        project = result.get("project", "")
+        if nums and project:
+            args = ", ".join(nums) + " to " + project
+            await cmd_move(args, update, state)
+        else:
+            await update.message.reply_text("Couldn't figure out which tasks or project. Try: /move 1,3,5 to Project Name")
     elif intent == "people":
         await cmd_people("", update, state)
     elif intent == "dump":
@@ -186,6 +195,7 @@ async def cmd_help(args: str, update: Update, state: dict):
 "add buy groceries due Friday" or /add ...
 "change 1 priority to high" or /edit 1 priority: high
 "delete 3" or /delete 3
+"move 1, 3, 5 to Med Spa Scheduler" or /move 1,3,5 to Project Name
 "who do I need to follow up with?" or /people
 "dump I need to call Sarah and finish slides" or /dump ...
 
@@ -536,6 +546,52 @@ async def cmd_delete(args: str, update: Update, state: dict):
     state.get("task_map", {}).pop(num, None)
 
     await update.message.reply_text(f"Deleted: {title}")
+
+
+async def cmd_move(args: str, update: Update, state: dict):
+    """Move tasks to a project. Usage: move 1,3,5 to Project Name"""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from services.notion import push_task
+    from sqlalchemy import select
+
+    # Parse: "1, 3, 5 to Project Name" or "1 3 5 Project Name"
+    m = re.match(r'([\d,\s]+)\s+(?:to\s+)?(.+)', args.strip())
+    if not m:
+        await update.message.reply_text("Usage: /move 1,3,5 to Project Name")
+        return
+
+    numbers = re.findall(r'\d+', m.group(1))
+    project = m.group(2).strip()
+
+    if not numbers or not project:
+        await update.message.reply_text("Usage: /move 1,3,5 to Project Name")
+        return
+
+    # Resolve task IDs
+    task_map = state.get("task_map", {})
+    invalid = [n for n in numbers if n not in task_map]
+    if invalid:
+        await update.message.reply_text(f"Invalid task number(s): {', '.join(invalid)}. Use /list first.")
+        return
+
+    project_value = project if project.lower() != "none" else None
+    moved = []
+
+    async with AsyncSessionLocal() as session:
+        for n in numbers:
+            result = await session.execute(select(Task).where(Task.id == task_map[n]))
+            task = result.scalar_one_or_none()
+            if task:
+                task.project = project_value
+                push_task(task)
+                moved.append(task.title)
+        await session.commit()
+
+    if project_value:
+        await update.message.reply_text(f"Moved {len(moved)} task(s) to {project}:\n" + "\n".join(f"  - {t}" for t in moved))
+    else:
+        await update.message.reply_text(f"Removed project from {len(moved)} task(s):\n" + "\n".join(f"  - {t}" for t in moved))
 
 
 async def cmd_people(args: str, update: Update, state: dict):
