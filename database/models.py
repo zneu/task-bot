@@ -48,6 +48,18 @@ class Capture(Base):
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
 
+class Note(Base):
+    __tablename__ = "notes"
+    id = Column(String, primary_key=True, default=new_id)
+    title = Column(String, nullable=False)
+    raw_transcript = Column(Text, nullable=False)
+    summary = Column(Text, nullable=False)
+    tags = Column(JSON, default=list)
+    source = Column(String, default="voice")
+    notion_id = Column(String, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
+
+
 class Person(Base):
     __tablename__ = "people"
     id = Column(String, primary_key=True, default=new_id)

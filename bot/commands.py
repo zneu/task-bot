@@ -18,6 +18,9 @@ _COMMAND_TABLE = [
     ("del", "cmd_delete", True),
     ("move", "cmd_move", True),
     ("people", "cmd_people", False),
+    ("viewnote", "cmd_viewnote", True),
+    ("notes", "cmd_notes", False),
+    ("note", "cmd_note", True),
     ("dump", "_dump", True),
 ]
 
@@ -131,6 +134,12 @@ async def _dispatch_single_intent(result: dict, text: str, update: Update, state
             await update.message.reply_text("Couldn't figure out which tasks or project. Try: /move 1,3,5 to Project Name")
     elif intent == "people":
         await cmd_people("", update, state)
+    elif intent == "note":
+        note_text = result.get("text", text)
+        await cmd_note(note_text, update, state)
+    elif intent == "notes":
+        search = result.get("search", "")
+        await cmd_notes(search, update, state)
     elif intent == "dump":
         dump_text = result.get("text", text)
         await _handle_dump(dump_text, update)
@@ -243,6 +252,10 @@ async def cmd_help(args: str, update: Update, state: dict):
 "move 1, 3, 5 to Med Spa Scheduler" or /move 1,3,5 to Project Name
 "who do I need to follow up with?" or /people
 "dump I need to call Sarah and finish slides" or /dump ...
+"note I've been thinking about pricing..." or /note ...
+"show my notes" or /notes
+"notes about taxes" or /notes taxes
+/viewnote 1 — see full transcript + summary
 
 I understand natural language, relative dates ("Friday", "end of the week"), and fuzzy project names.
 
@@ -665,3 +678,115 @@ async def cmd_people(args: str, update: Update, state: dict):
         lines.append(f"  - {p.name}{ctx}{action}{due}")
 
     await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_note(args: str, update: Update, state: dict):
+    """Save a voice/text note with Claude summary. Usage: note [text]"""
+    from database.connection import AsyncSessionLocal
+    from database.models import Note
+    from services.claude import summarize_note
+    from services.notion import push_note
+
+    if not args.strip():
+        await update.message.reply_text("Usage: /note [your thoughts here]")
+        return
+
+    transcript = args.strip()
+
+    # Determine source based on how we got here
+    source = "voice" if len(transcript) > 100 else "text"
+
+    try:
+        result = summarize_note(transcript)
+    except Exception:
+        logger.exception("Note summarization failed")
+        await update.message.reply_text("Failed to process note. Try again.")
+        return
+
+    title = result.get("title", "Untitled Note")
+    summary = result.get("summary", "")
+    tags = result.get("tags", [])
+
+    async with AsyncSessionLocal() as session:
+        note = Note(
+            title=title,
+            raw_transcript=transcript,
+            summary=summary,
+            tags=tags,
+            source=source,
+        )
+        session.add(note)
+        await session.flush()
+        notion_id = push_note(note)
+        if notion_id:
+            note.notion_id = notion_id
+        await session.commit()
+
+    tag_str = f"\nTags: {', '.join(tags)}" if tags else ""
+    await update.message.reply_text(f"Noted: {title}\n\n{summary}{tag_str}")
+
+
+async def cmd_notes(args: str, update: Update, state: dict):
+    """List or search notes. Usage: notes [search term]"""
+    from database.connection import AsyncSessionLocal
+    from database.models import Note
+    from sqlalchemy import select
+
+    search = args.strip()
+
+    async with AsyncSessionLocal() as session:
+        query = select(Note).order_by(Note.created_at.desc()).limit(10)
+        if search:
+            query = query.where(
+                Note.raw_transcript.ilike(f"%{search}%")
+                | Note.title.ilike(f"%{search}%")
+                | Note.summary.ilike(f"%{search}%")
+            )
+        result = await session.execute(query)
+        notes = result.scalars().all()
+
+    if not notes:
+        label = f" matching '{search}'" if search else ""
+        await update.message.reply_text(f"No notes found{label}.")
+        return
+
+    # Store note map for viewing
+    note_map = {}
+    lines = ["Recent notes:" if not search else f"Notes matching '{search}':"]
+    for i, n in enumerate(notes, 1):
+        date = n.created_at.strftime("%m/%d")
+        lines.append(f"  {i}. [{date}] {n.title}")
+        note_map[str(i)] = n.id
+
+    state["note_map"] = note_map
+    lines.append("\nSend /viewnote N to see the full note.")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_viewnote(args: str, update: Update, state: dict):
+    """View a full note by number. Usage: viewnote N"""
+    from database.connection import AsyncSessionLocal
+    from database.models import Note
+    from sqlalchemy import select
+
+    num = args.strip()
+    note_id = state.get("note_map", {}).get(num)
+    if not note_id:
+        await update.message.reply_text(f"No note #{num}. Use /notes first.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Note).where(Note.id == note_id))
+        note = result.scalar_one_or_none()
+
+    if not note:
+        await update.message.reply_text("Note not found.")
+        return
+
+    date = note.created_at.strftime("%Y-%m-%d %H:%M")
+    tag_str = f"\nTags: {', '.join(note.tags)}" if note.tags else ""
+    await update.message.reply_text(
+        f"{note.title}\n{date} ({note.source}){tag_str}\n\n"
+        f"Summary:\n{note.summary}\n\n"
+        f"Full transcript:\n{note.raw_transcript}"
+    )

@@ -28,6 +28,34 @@ def chat(user_message: str, conversation_history: list) -> str:
     return get_response(system, messages)
 
 
+def summarize_note(text: str) -> dict:
+    """Summarize a transcript into a structured note.
+
+    Returns dict: {"title": "...", "summary": "- bullet 1\n- bullet 2", "tags": ["tag1", "tag2"]}
+    """
+    system = """You are a note summarizer. Given a raw transcript (often from a voice memo), produce a structured summary.
+
+Return ONLY valid JSON with these fields:
+- "title": A short descriptive title (5-10 words) capturing the main topic
+- "summary": Key points as bullet points (each line starts with "- "). Preserve the speaker's intent and meaning. Be thorough but concise.
+- "tags": 1-5 topic tags from this list: General, Music, Throne, Business, Personal. Pick the most relevant.
+
+Do NOT add action items or task suggestions. Just capture what was said."""
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=800,
+        system=system,
+        messages=[{"role": "user", "content": text}],
+    )
+    raw = response.content[0].text.strip()
+    if "```json" in raw:
+        raw = raw.split("```json")[1].split("```")[0]
+    elif "```" in raw:
+        raw = raw.split("```")[1].split("```")[0]
+    return json.loads(raw.strip())
+
+
 def extract_from_dump(text: str) -> dict:
     """Extract tasks, people, ideas, commitments from a brain dump."""
     system = (PROMPTS_DIR / "brain_dump.txt").read_text()
@@ -90,6 +118,8 @@ Classify the user's message into ONE of these intents and return ONLY valid JSON
 - {{"intent": "move", "nums": ["1","3","5"], "project": "..."}} — move tasks to a project. Match project name fuzzily to known projects.
 - {{"intent": "people"}} — list tracked people
 - {{"intent": "dump", "text": "..."}} — user is brain-dumping multiple tasks/ideas/people at once (long, stream-of-consciousness input with multiple items)
+- {{"intent": "note", "text": "..."}} — user wants to save a journal note/thought (not a task). Triggered by "note", "add a note", "journal", or when the user is clearly just recording thoughts/reflections
+- {{"intent": "notes"}} — user wants to list or search their notes. Optional: "search": "keyword"
 - {{"intent": "help"}} — user wants to know what they can do
 - {{"intent": "chat"}} — just conversation, not a task command
 
