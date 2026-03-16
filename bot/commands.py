@@ -248,20 +248,7 @@ async def cmd_list(args: str, update: Update, state: dict):
     state["task_map"] = task_map
 
     header = "All tasks:" if show_all else "Open tasks:"
-    text = f"{header}\n\n" + "\n".join(lines)
-
-    # Build inline keyboard: Done/Doing buttons for open tasks
-    buttons = []
-    for num_str, task_id in task_map.items():
-        task_obj = next((t for t in tasks if t.id == task_id), None)
-        if task_obj and task_obj.status != "done":
-            buttons.append([
-                InlineKeyboardButton(f"Done {num_str}", callback_data=f"done:{num_str}"),
-                InlineKeyboardButton(f"Doing {num_str}", callback_data=f"doing:{num_str}"),
-            ])
-
-    reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
-    await update.message.reply_text(text, reply_markup=reply_markup)
+    await update.message.reply_text(f"{header}\n\n" + "\n".join(lines))
 
 
 async def cmd_done(args: str, update: Update, state: dict):
