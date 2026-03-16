@@ -31,11 +31,15 @@ async def route_command(text: str, update: Update, state: dict) -> bool:
     """
     lower = text.strip().lower()
 
-    # Fast path: prefix match
+    # Fast path: prefix match (only for clean, simple commands)
+    # Skip fast path if args contain "and" — likely a compound command for Claude
     handlers = {name: func for name, func in globals().items() if name.startswith("cmd_")}
     for prefix, handler_name, requires_args in _COMMAND_TABLE:
         if lower == prefix or lower.startswith(prefix + " "):
             args = text.strip()[len(prefix):].strip()
+            # Compound command detection: skip fast path, let Claude parse it
+            if " and " in args.lower():
+                break
             if prefix == "dump":
                 if args:
                     await _handle_dump(args, update)
@@ -54,7 +58,10 @@ async def route_command(text: str, update: Update, state: dict) -> bool:
 
 
 async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool:
-    """Use Claude to classify intent and dispatch to handler."""
+    """Use Claude to classify intent and dispatch to handler.
+
+    Supports single intents (dict) and compound intents (list of dicts).
+    """
     from services.claude import classify_intent
 
     # Get full task and people context for Claude
@@ -67,12 +74,29 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
         logger.exception("Intent classification failed")
         return False  # Fall through to chat
 
+    # Normalize to list of intents
+    if isinstance(result, list):
+        intents = result
+    else:
+        intents = [result]
+
+    # If the only intent is chat, fall through
+    if len(intents) == 1 and intents[0].get("intent") == "chat":
+        return False
+
+    for intent_data in intents:
+        await _dispatch_single_intent(intent_data, text, update, state)
+
+    return True
+
+
+async def _dispatch_single_intent(result: dict, text: str, update: Update, state: dict):
+    """Dispatch a single classified intent to its handler."""
     intent = result.get("intent", "chat")
 
     if intent == "chat":
-        return False
-
-    if intent == "help":
+        return
+    elif intent == "help":
         await cmd_help("", update, state)
     elif intent == "list":
         args = ""
@@ -104,10 +128,6 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
     elif intent == "dump":
         dump_text = result.get("text", text)
         await _handle_dump(dump_text, update)
-    else:
-        return False
-
-    return True
 
 
 async def _get_task_context() -> tuple[list[str], str]:

@@ -100,8 +100,10 @@ Rules:
 - If ambiguous between dump and add, prefer add for single items, dump for multiple
 - When the user references a task by name/description (not number), match to the closest task title above
 - When the user asks about a person, match to tracked people names fuzzily
+- If the message contains MULTIPLE commands (e.g. "delete 11 and move 15,16,17 to Taxes"), return a JSON array of intents: [{{"intent": "delete", "num": "11"}}, {{"intent": "move", "nums": ["15","16","17"], "project": "Taxes"}}]
+- For single commands, return a single JSON object (not an array)
 - If the message is clearly just chat/greeting/thanks, return chat
-- Return ONLY the JSON object, no explanation"""
+- Return ONLY the JSON, no explanation"""
 
     response = client.messages.create(
         model=MODEL,
