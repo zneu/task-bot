@@ -59,6 +59,13 @@ class Note(Base):
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
 
+class UserState(Base):
+    __tablename__ = "user_states"
+    user_id = Column(String, primary_key=True)
+    task_map = Column(JSON, default=dict)
+    updated_at = Column(TIMESTAMP(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Person(Base):
     __tablename__ = "people"
     id = Column(String, primary_key=True, default=new_id)

@@ -34,6 +34,13 @@ async def morning_checkin(telegram_app):
     priority_order = {"high": 0, "medium": 1, "low": 2}
     tasks.sort(key=lambda t: (priority_order.get(t.priority, 1), -t.avoided_count))
 
+    # Sync task_map to match morning numbering so "delete 3" hits the right task
+    task_map = {str(i + 1): t.id for i, t in enumerate(tasks)}
+    from bot.state import get_state, save_task_map
+    state = get_state(AUTHORIZED_USER_ID)
+    state["task_map"] = task_map
+    await save_task_map(AUTHORIZED_USER_ID, task_map)
+
     task_list = "\n".join(
         f"- [{i+1}] {t.title} (priority: {t.priority}, avoided: {t.avoided_count}x"
         + (f", due: {t.due_date.strftime('%Y-%m-%d')}" if t.due_date else "")
