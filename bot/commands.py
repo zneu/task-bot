@@ -5,6 +5,24 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
+
+def _clean_num(raw: str) -> str:
+    """Strip filler words from number arguments: 'task 19' → '19', 'number four' → '4'."""
+    word_nums = {
+        "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+        "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+        "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
+        "fifteen": "15", "sixteen": "16", "seventeen": "17", "eighteen": "18",
+        "nineteen": "19", "twenty": "20",
+    }
+    cleaned = raw.strip().lower()
+    for word in ("task", "number", "#"):
+        cleaned = cleaned.replace(word, "")
+    cleaned = cleaned.strip()
+    if cleaned in word_nums:
+        cleaned = word_nums[cleaned]
+    return cleaned
+
 # Prefix table for fast-path matching (no API call needed)
 _COMMAND_TABLE = [
     ("clear", "cmd_clear", False),
@@ -36,7 +54,10 @@ async def route_command(text: str, update: Update, state: dict) -> bool:
     lower = text.strip().lower()
 
     # Auto-populate task_map if empty
-    await _ensure_task_map(state)
+    # Suppress auto-show for /list since it will display its own full list
+    user_id = str(update.effective_user.id)
+    is_list_cmd = lower == "list" or lower == "tasks" or lower.startswith("list ") or lower.startswith("tasks ")
+    await _ensure_task_map(state, update=None if is_list_cmd else update, user_id=user_id)
 
     # Fast path: prefix match (only for clean, simple commands)
     # Skip fast path if args contain "and" — likely a compound command for Claude
@@ -45,7 +66,10 @@ async def route_command(text: str, update: Update, state: dict) -> bool:
         if lower == prefix or lower.startswith(prefix + " "):
             args = text.strip()[len(prefix):].strip()
             # Compound command detection: skip fast path, let Claude parse it
-            if " and " in args.lower():
+            if " and " in args.lower() or "\nand " in args.lower() or "\n" in args:
+                break
+            # Natural language add: let Claude parse project/context references
+            if prefix == "add" and re.search(r'\b(under|back|for the|to the|in the|into)\b', args.lower()):
                 break
             if prefix == "dump":
                 if args:
@@ -92,7 +116,10 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
         return False
 
     # Ensure task_map is populated before dispatching
-    await _ensure_task_map(state)
+    # Check if this is a list intent — suppress auto-show
+    user_id = str(update.effective_user.id)
+    is_list_intent = len(intents) == 1 and intents[0].get("intent") == "list"
+    await _ensure_task_map(state, update=None if is_list_intent else update, user_id=user_id)
 
     for intent_data in intents:
         await _dispatch_single_intent(intent_data, text, update, state)
@@ -146,10 +173,22 @@ async def _dispatch_single_intent(result: dict, text: str, update: Update, state
         await _handle_dump(dump_text, update)
 
 
-async def _ensure_task_map(state: dict):
-    """Auto-populate task_map if empty, so commands work without /list first."""
+async def _ensure_task_map(state: dict, update: Update = None, user_id: str = None):
+    """Auto-populate task_map if empty.
+
+    Priority: in-memory → persisted in DB → fresh query.
+    If update is provided and the map was empty, sends an abbreviated task list.
+    """
     if state.get("task_map"):
         return
+
+    # Try loading persisted map first
+    if user_id:
+        from bot.state import load_task_map
+        persisted = await load_task_map(user_id)
+        if persisted:
+            state["task_map"] = persisted
+            return
 
     from database.connection import AsyncSessionLocal
     from database.models import Task
@@ -162,7 +201,23 @@ async def _ensure_task_map(state: dict):
         )
         tasks = result.scalars().all()
 
+    if not tasks:
+        return
+
     state["task_map"] = {str(i + 1): t.id for i, t in enumerate(tasks)}
+
+    # Persist the freshly built map
+    if user_id:
+        from bot.state import save_task_map
+        await save_task_map(user_id, state["task_map"])
+
+    # Show abbreviated list so user knows the numbering
+    if update and update.message:
+        lines = [f"  {i+1}. {t.title}" for i, t in enumerate(tasks)]
+        brief = "\n".join(lines[:8])
+        if len(tasks) > 8:
+            brief += f"\n  ... and {len(tasks) - 8} more"
+        await update.message.reply_text(f"Your tasks:\n{brief}")
 
 
 async def _get_task_context() -> tuple[list[str], str]:
@@ -322,6 +377,11 @@ async def cmd_list(args: str, update: Update, state: dict):
 
     state["task_map"] = task_map
 
+    # Persist updated map
+    user_id = str(update.effective_user.id)
+    from bot.state import save_task_map
+    await save_task_map(user_id, task_map)
+
     header = "All tasks:" if show_all else "Open tasks:"
     await update.message.reply_text(f"{header}\n\n" + "\n".join(lines))
 
@@ -343,7 +403,7 @@ async def _set_status(args: str, status: str, update: Update, state: dict):
     from services.notion import push_task
     from sqlalchemy import select
 
-    num = args.strip()
+    num = _clean_num(args)
     task_id = state.get("task_map", {}).get(num)
     if not task_id:
         await update.message.reply_text(f"No task #{num}. Use /list first.")
@@ -363,17 +423,12 @@ async def _set_status(args: str, status: str, update: Update, state: dict):
         await update.message.reply_text(f"{label}: {task.title}")
 
 
-async def _set_status_from_callback(num: str, status: str, message, state: dict):
-    """Set task status from inline keyboard callback (uses message.reply_text)."""
+async def _set_status_by_id(task_id: str, status: str, message):
+    """Set task status by UUID (used by callback buttons)."""
     from database.connection import AsyncSessionLocal
     from database.models import Task
     from services.notion import push_task
     from sqlalchemy import select
-
-    task_id = state.get("task_map", {}).get(num)
-    if not task_id:
-        await message.reply_text(f"No task #{num}. Use /list first.")
-        return
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(Task).where(Task.id == task_id))
@@ -387,6 +442,15 @@ async def _set_status_from_callback(num: str, status: str, message, state: dict)
         await session.commit()
         label = "Done" if status == "done" else "In progress"
         await message.reply_text(f"{label}: {task.title}")
+
+
+async def _set_status_from_callback(num: str, status: str, message, state: dict):
+    """Set task status from inline keyboard callback (legacy number-based)."""
+    task_id = state.get("task_map", {}).get(num)
+    if not task_id:
+        await message.reply_text(f"No task #{num}. Use /list first.")
+        return
+    await _set_status_by_id(task_id, status, message)
 
 
 async def cmd_add(args: str, update: Update, state: dict):
@@ -497,7 +561,7 @@ async def cmd_edit(args: str, update: Update, state: dict):
         await update.message.reply_text("Usage: /edit N field: value\nFields: title, priority, project, due, notes")
         return
 
-    num = parts[0]
+    num = _clean_num(parts[0])
     task_id = state.get("task_map", {}).get(num)
     if not task_id:
         await update.message.reply_text(f"No task #{num}. Use /list first.")
@@ -585,7 +649,7 @@ async def cmd_delete(args: str, update: Update, state: dict):
     from services.notion import archive_task
     from sqlalchemy import select
 
-    num = args.strip()
+    num = _clean_num(args)
     task_id = state.get("task_map", {}).get(num)
     if not task_id:
         await update.message.reply_text(f"No task #{num}. Use /list first.")

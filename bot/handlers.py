@@ -55,8 +55,11 @@ async def process_input(text: str, update: Update, source: str = "text"):
     from bot.commands import route_command
     handled = await route_command(text, update, state)
     if handled:
-        # Save to conversation history so classify_intent has context for follow-ups
+        # Save to conversation history for follow-ups, but cap command history
+        # to prevent old commands from bleeding into new classifications
         add_to_history(user_id, "user", text)
+        if len(state["conversation_history"]) > 2:
+            state["conversation_history"] = state["conversation_history"][-2:]
         return
 
     # Default: chat (with task context)
@@ -191,12 +194,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data.startswith("done:") or data.startswith("doing:"):
-        action, num = data.split(":", 1)
+        action, identifier = data.split(":", 1)
         user_id = str(query.from_user.id)
         state = get_state(user_id)
         status = "done" if action == "done" else "in_progress"
-        from bot.commands import _set_status_from_callback
-        await _set_status_from_callback(num, status, query.message, state)
+
+        # Resolve: UUID (direct) or display number (via task_map)
+        if "-" in identifier:
+            task_id = identifier
+        else:
+            from bot.commands import _ensure_task_map
+            await _ensure_task_map(state, user_id=user_id)
+            task_id = state.get("task_map", {}).get(identifier)
+
+        if task_id:
+            from bot.commands import _set_status_by_id
+            await _set_status_by_id(task_id, status, query.message)
+        else:
+            await query.message.reply_text("Couldn't find that task. Use /list to refresh.")
 
     elif data == "save_dump":
         user_id = str(query.from_user.id)
