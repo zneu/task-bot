@@ -74,7 +74,7 @@ def extract_from_dump(text: str) -> dict:
     return json.loads(raw.strip())
 
 
-def classify_intent(text: str, projects: list[str], task_map: dict, task_context: str = "", people: list[str] = None) -> dict:
+def classify_intent(text: str, projects: list[str], task_map: dict, task_context: str = "", people: list[str] = None, conversation_history: list = None) -> dict:
     """Classify user message into a structured intent using Claude.
 
     Returns dict like:
@@ -135,11 +135,17 @@ Rules:
 - If the message is clearly just chat/greeting/thanks, return chat
 - Return ONLY the JSON, no explanation"""
 
+    # Include conversation history so follow-ups like "yes do it all" work
+    messages = []
+    if conversation_history:
+        messages.extend(conversation_history[-6:])  # Last 3 exchanges
+    messages.append({"role": "user", "content": text})
+
     response = client.messages.create(
         model=MODEL,
-        max_tokens=200,
+        max_tokens=5000,
         system=system,
-        messages=[{"role": "user", "content": text}],
+        messages=messages,
     )
     raw = response.content[0].text.strip()
     if "```json" in raw:

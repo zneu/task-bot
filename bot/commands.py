@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 # Prefix table for fast-path matching (no API call needed)
 _COMMAND_TABLE = [
+    ("clear", "cmd_clear", False),
     ("help", "cmd_help", False),
     ("list", "cmd_list", False),
     ("tasks", "cmd_list", False),
@@ -75,7 +76,7 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
     people = await _get_people_names()
 
     try:
-        result = classify_intent(text, projects, state.get("task_map", {}), task_context, people)
+        result = classify_intent(text, projects, state.get("task_map", {}), task_context, people, state.get("conversation_history", []))
     except Exception:
         logger.exception("Intent classification failed")
         return False  # Fall through to chat
@@ -236,6 +237,12 @@ async def _handle_dump(text: str, update: Update):
         await update.message.reply_text(formatted, reply_markup=keyboard)
     else:
         await update.message.reply_text("Couldn't extract any items from that. Try being more specific.")
+
+
+async def cmd_clear(args: str, update: Update, state: dict):
+    """Clear conversation history."""
+    state["conversation_history"] = []
+    await update.message.reply_text("Conversation cleared.")
 
 
 async def cmd_help(args: str, update: Update, state: dict):

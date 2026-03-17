@@ -55,6 +55,8 @@ async def process_input(text: str, update: Update, source: str = "text"):
     from bot.commands import route_command
     handled = await route_command(text, update, state)
     if handled:
+        # Save to conversation history so classify_intent has context for follow-ups
+        add_to_history(user_id, "user", text)
         return
 
     # Default: chat (with task context)
