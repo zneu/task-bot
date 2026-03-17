@@ -21,7 +21,6 @@ class Task(Base):
     priority = Column(String, default="medium")
     project = Column(String, nullable=True)
     due_date = Column(TIMESTAMP(timezone=True), nullable=True)
-    committed_today = Column(Boolean, default=False)
     notes = Column(Text, nullable=True)
     notion_id = Column(String, nullable=True)
     avoided_count = Column(Integer, default=0)
@@ -45,6 +44,18 @@ class Capture(Base):
     source = Column(String)
     items_created = Column(JSON, default=list)
     processed = Column(Boolean, default=False)
+    created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
+
+
+class Note(Base):
+    __tablename__ = "notes"
+    id = Column(String, primary_key=True, default=new_id)
+    title = Column(String, nullable=False)
+    raw_transcript = Column(Text, nullable=False)
+    summary = Column(Text, nullable=False)
+    tags = Column(JSON, default=list)
+    source = Column(String, default="voice")
+    notion_id = Column(String, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
 
 

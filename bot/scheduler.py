@@ -6,7 +6,7 @@ import pytz
 
 from database.connection import AsyncSessionLocal
 from database.models import Task
-from services.claude import get_response, get_checkin_context
+from services.claude import get_response
 from sqlalchemy import select
 from pathlib import Path
 
@@ -16,7 +16,7 @@ AUTHORIZED_USER_ID = os.getenv("AUTHORIZED_USER_ID", "")
 
 
 async def morning_checkin(telegram_app):
-    """Pull open tasks, ask Claude for top 3, send to user."""
+    """Pull open tasks, send Claude's recommendation. No response required."""
     logger.info("Morning check-in triggered")
     chat_id = int(AUTHORIZED_USER_ID)
 
@@ -43,39 +43,36 @@ async def morning_checkin(telegram_app):
     )
 
     system = (PROMPTS_DIR / "morning.txt").read_text()
-    history = await get_checkin_context()
-    user_msg = f"{history}\n\nHere are my open tasks:\n\n{task_list}"
+    user_msg = f"Here are my open tasks:\n\n{task_list}"
 
     response = get_response(system, [{"role": "user", "content": user_msg}], max_tokens=800)
-
-    from bot.state import get_state
-    state = get_state(AUTHORIZED_USER_ID)
-    state["mode"] = "morning"
-    # Store numbered mapping: "1" -> task_id, "2" -> task_id, etc.
-    state["_morning_tasks"] = {str(i+1): t.id for i, t in enumerate(tasks)}
 
     await telegram_app.bot.send_message(chat_id, response)
 
 
 async def afternoon_checkin(telegram_app):
-    """Mid-day nudge on committed tasks."""
+    """Mid-day nudge on open tasks. No response required."""
     logger.info("Afternoon check-in triggered")
     chat_id = int(AUTHORIZED_USER_ID)
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Task).where(Task.committed_today == True)
+            select(Task).where(Task.status.in_(["not_started", "in_progress"]))
         )
         tasks = result.scalars().all()
 
     if not tasks:
-        await telegram_app.bot.send_message(chat_id, "No tasks committed today. Want to pick something to focus on this afternoon?")
+        await telegram_app.bot.send_message(chat_id, "No open tasks. Enjoy your afternoon.")
         return
 
-    task_list = "\n".join(f"- {t.title}" for t in tasks)
+    task_list = "\n".join(
+        f"- {t.title} (priority: {t.priority}, status: {t.status})"
+        + (f" [project: {t.project}]" if t.project else "")
+        for t in tasks
+    )
 
     system = (PROMPTS_DIR / "afternoon.txt").read_text()
-    user_msg = f"Tasks I committed to today:\n\n{task_list}"
+    user_msg = f"Here are my open tasks:\n\n{task_list}"
 
     response = get_response(system, [{"role": "user", "content": user_msg}], max_tokens=500)
 
@@ -83,52 +80,81 @@ async def afternoon_checkin(telegram_app):
 
 
 async def evening_checkin(telegram_app):
-    """Check committed tasks, ask what happened."""
+    """End-of-day summary of open tasks. No response required."""
     logger.info("Evening check-in triggered")
     chat_id = int(AUTHORIZED_USER_ID)
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Task).where(Task.committed_today == True)
+            select(Task).where(Task.status.in_(["not_started", "in_progress"]))
         )
         tasks = result.scalars().all()
 
     if not tasks:
-        await telegram_app.bot.send_message(chat_id, "No tasks were committed today. How did the day go?")
+        await telegram_app.bot.send_message(chat_id, "No open tasks. Nice work today.")
         return
 
-    task_list = "\n".join(f"- {t.title}" for t in tasks)
-
     system = (PROMPTS_DIR / "evening.txt").read_text()
-    history = await get_checkin_context()
-    user_msg = f"{history}\n\nTasks I committed to today:\n\n{task_list}"
+    task_list = "\n".join(
+        f"- {t.title} (priority: {t.priority}, status: {t.status})"
+        + (f" [project: {t.project}]" if t.project else "")
+        for t in tasks
+    )
+    user_msg = f"Here are my open tasks:\n\n{task_list}"
 
     response = get_response(system, [{"role": "user", "content": user_msg}], max_tokens=500)
-
-    from bot.state import get_state
-    state = get_state(AUTHORIZED_USER_ID)
-    state["mode"] = "evening"
-    state["committed_task_ids"] = [t.id for t in tasks]
 
     await telegram_app.bot.send_message(chat_id, response)
 
 
 async def weekly_summary(telegram_app):
-    """Send weekly summary 30 min before Sunday evening check-in."""
+    """Send weekly summary on Sundays based on current task state."""
     logger.info("Weekly summary triggered")
     chat_id = int(AUTHORIZED_USER_ID)
 
-    history = await get_checkin_context()
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Task))
+        all_tasks = result.scalars().all()
 
-    system = """Review this week's check-in history. Provide:
-1. What got done (celebrate wins)
-2. What slipped and patterns you notice
+    if not all_tasks:
+        await telegram_app.bot.send_message(chat_id, "Weekly Review\n\nNo tasks in the system yet. Add some and I'll start tracking.")
+        return
+
+    open_tasks = [t for t in all_tasks if t.status in ("not_started", "in_progress")]
+    done_tasks = [t for t in all_tasks if t.status == "done"]
+    avoided = [t for t in open_tasks if t.avoided_count >= 2]
+
+    lines = []
+    if done_tasks:
+        lines.append("Completed tasks:")
+        for t in done_tasks:
+            lines.append(f"  - {t.title}" + (f" [{t.project}]" if t.project else ""))
+    if open_tasks:
+        lines.append("\nOpen tasks:")
+        for t in open_tasks:
+            extra = []
+            if t.avoided_count:
+                extra.append(f"avoided {t.avoided_count}x")
+            if t.due_date:
+                extra.append(f"due {t.due_date.strftime('%Y-%m-%d')}")
+            suffix = f" ({', '.join(extra)})" if extra else ""
+            lines.append(f"  - {t.title} [{t.priority}]{suffix}" + (f" [{t.project}]" if t.project else ""))
+    if avoided:
+        lines.append(f"\nRepeatedly avoided ({len(avoided)} tasks):")
+        for t in avoided:
+            lines.append(f"  - {t.title} (avoided {t.avoided_count}x)")
+
+    task_summary = "\n".join(lines)
+
+    system = """Review the current state of tasks. Provide:
+1. What's been completed (celebrate wins)
+2. What's still open and any patterns (repeatedly avoided tasks, overdue items)
 3. Top priorities for next week
 4. Any tasks that should be dropped or rethought
 
 Be direct and supportive. Under 200 words."""
 
-    response = get_response(system, [{"role": "user", "content": history}], max_tokens=500)
+    response = get_response(system, [{"role": "user", "content": task_summary}], max_tokens=500)
     await telegram_app.bot.send_message(chat_id, f"Weekly Review\n\n{response}")
 
 
@@ -142,17 +168,17 @@ def start_scheduler(telegram_app):
 
     scheduler.add_job(
         morning_checkin,
-        CronTrigger(hour=int(morning[0]), minute=int(morning[1]), timezone=tz),
+        CronTrigger(day_of_week="mon-fri", hour=int(morning[0]), minute=int(morning[1]), timezone=tz),
         args=[telegram_app],
     )
     scheduler.add_job(
         afternoon_checkin,
-        CronTrigger(hour=int(afternoon[0]), minute=int(afternoon[1]), timezone=tz),
+        CronTrigger(day_of_week="mon-fri", hour=int(afternoon[0]), minute=int(afternoon[1]), timezone=tz),
         args=[telegram_app],
     )
     scheduler.add_job(
         evening_checkin,
-        CronTrigger(hour=int(evening[0]), minute=int(evening[1]), timezone=tz),
+        CronTrigger(day_of_week="mon-fri", hour=int(evening[0]), minute=int(evening[1]), timezone=tz),
         args=[telegram_app],
     )
 
@@ -169,6 +195,6 @@ def start_scheduler(telegram_app):
     logger.info(
         f"Scheduler started: morning={morning[0]}:{morning[1]}, "
         f"afternoon={afternoon[0]}:{afternoon[1]}, "
-        f"evening={evening[0]}:{evening[1]} ({tz})"
+        f"evening={evening[0]}:{evening[1]} (mon-fri, {tz})"
     )
     return scheduler
