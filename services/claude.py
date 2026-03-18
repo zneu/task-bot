@@ -74,7 +74,7 @@ def extract_from_dump(text: str) -> dict:
     return json.loads(raw.strip())
 
 
-def classify_intent(text: str, projects: list[str], task_map: dict, task_context: str = "", people: list[str] = None, conversation_history: list = None) -> dict:
+def classify_intent(text: str, projects: list[str], task_map: dict, task_context: str = "", people: list[str] = None, conversation_history: list = None, task_map_titles: dict = None) -> dict:
     """Classify user message into a structured intent using Claude.
 
     Returns dict like:
@@ -90,7 +90,11 @@ def classify_intent(text: str, projects: list[str], task_map: dict, task_context
 
     # Build task list context for num references
     task_list_str = ""
-    if task_map:
+    if task_map_titles:
+        task_list_str = "\nCurrently displayed tasks (number → title):\n" + "\n".join(
+            f"  #{k} → {title}" for k, title in sorted(task_map_titles.items(), key=lambda x: int(x[0]))
+        )
+    elif task_map:
         task_list_str = "\nCurrently displayed task numbers:\n" + "\n".join(
             f"  #{k}" for k in sorted(task_map.keys(), key=int)
         )
