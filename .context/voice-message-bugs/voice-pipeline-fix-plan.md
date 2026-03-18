@@ -10,13 +10,13 @@ Fix all 7 voice message pipeline bugs so that voice-transcribed commands (delete
 
 ## Success Criteria
 
-- [ ] `_clean_num("one.")` → `"1"`, `_clean_num("3.")` → `"3"`, `_clean_num("3,")` → `"3"`
-- [ ] `_clean_num("3 please")` → `"3"`, `_clean_num("the first one")` → `"1"`
-- [ ] Ordinals work: `_clean_num("first")` → `"1"`, `_clean_num("third")` → `"3"`
-- [ ] Classifier prompt links task numbers to task titles so Claude can resolve "delete the grocery task" → `{"intent": "delete", "num": "1"}`
-- [ ] Voice input like "Delete that task about groceries" bypasses fast path and goes to Claude classifier
-- [ ] `source="voice"` is forwarded through the pipeline and used to route voice to classifier
-- [ ] Whisper transcription post-processing strips trailing punctuation and normalizes case
+- [x] `_clean_num("one.")` → `"1"`, `_clean_num("3.")` → `"3"`, `_clean_num("3,")` → `"3"`
+- [x] `_clean_num("3 please")` → `"3"`, `_clean_num("the first one")` → `"1"`
+- [x] Ordinals work: `_clean_num("first")` → `"1"`, `_clean_num("third")` → `"3"`
+- [x] Classifier prompt links task numbers to task titles so Claude can resolve "delete the grocery task" → `{"intent": "delete", "num": "1"}`
+- [x] Voice input like "Delete that task about groceries" bypasses fast path and goes to Claude classifier
+- [x] `source="voice"` is forwarded through the pipeline and used to route voice to classifier
+- [x] Whisper transcription post-processing strips trailing punctuation and normalizes case
 
 ## Scope Boundaries
 

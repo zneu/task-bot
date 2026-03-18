@@ -14,13 +14,26 @@ def _clean_num(raw: str) -> str:
         "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
         "fifteen": "15", "sixteen": "16", "seventeen": "17", "eighteen": "18",
         "nineteen": "19", "twenty": "20",
+        # Ordinals
+        "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5",
+        "sixth": "6", "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10",
+        "eleventh": "11", "twelfth": "12", "thirteenth": "13", "fourteenth": "14",
+        "fifteenth": "15", "sixteenth": "16", "seventeenth": "17", "eighteenth": "18",
+        "nineteenth": "19", "twentieth": "20",
     }
     cleaned = raw.strip().lower()
-    for word in ("task", "number", "#"):
-        cleaned = cleaned.replace(word, "")
-    cleaned = cleaned.strip()
+    cleaned = re.sub(r'[^\w\s]', '', cleaned)  # strip punctuation
+    for word in ("task", "number", "please", "the", "that", "um", "uh", "like"):
+        cleaned = re.sub(rf'\b{word}\b', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     if cleaned in word_nums:
-        cleaned = word_nums[cleaned]
+        return word_nums[cleaned]
+    # Try individual tokens (e.g. "third one" → "third" → "3")
+    for token in cleaned.split():
+        if token in word_nums:
+            return word_nums[token]
+        if token.isdigit():
+            return token
     return cleaned
 
 # Prefix table for fast-path matching (no API call needed)
@@ -44,7 +57,7 @@ _COMMAND_TABLE = [
 ]
 
 
-async def route_command(text: str, update: Update, state: dict) -> bool:
+async def route_command(text: str, update: Update, state: dict, source: str = "text") -> bool:
     """Route user message to the right handler.
 
     Fast path: exact prefix match (e.g. "done 3", "list all").
@@ -71,6 +84,12 @@ async def route_command(text: str, update: Update, state: dict) -> bool:
             # Natural language add: let Claude parse project/context references
             if prefix == "add" and re.search(r'\b(under|back|for the|to the|in the|into)\b', args.lower()):
                 break
+            # Voice: skip fast path unless args are a clean number or word-number
+            # This routes "delete that task about groceries" to Claude
+            if source == "voice" and requires_args:
+                clean = _clean_num(args)
+                if not clean.isdigit():
+                    break
             if prefix == "dump":
                 if args:
                     await _handle_dump(args, update)
@@ -85,10 +104,10 @@ async def route_command(text: str, update: Update, state: dict) -> bool:
             return True
 
     # Slow path: Claude intent classification
-    return await _classify_and_dispatch(text, update, state)
+    return await _classify_and_dispatch(text, update, state, source=source)
 
 
-async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool:
+async def _classify_and_dispatch(text: str, update: Update, state: dict, source: str = "text") -> bool:
     """Use Claude to classify intent and dispatch to handler.
 
     Supports single intents (dict) and compound intents (list of dicts).
@@ -99,8 +118,12 @@ async def _classify_and_dispatch(text: str, update: Update, state: dict) -> bool
     projects, task_context = await _get_task_context()
     people = await _get_people_names()
 
+    # Build linked task number → title map for the classifier
+    task_map = state.get("task_map", {})
+    task_map_titles = await _get_task_map_titles(task_map)
+
     try:
-        result = classify_intent(text, projects, state.get("task_map", {}), task_context, people, state.get("conversation_history", []))
+        result = classify_intent(text, projects, task_map, task_context, people, state.get("conversation_history", []), task_map_titles=task_map_titles)
     except Exception:
         logger.exception("Intent classification failed")
         return False  # Fall through to chat
@@ -262,6 +285,23 @@ async def _get_people_names() -> list[str]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(Person.name))
         return [row[0] for row in result.all()]
+
+
+async def _get_task_map_titles(task_map: dict) -> dict:
+    """Resolve task_map display numbers to task titles."""
+    if not task_map:
+        return {}
+
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from sqlalchemy import select
+
+    task_ids = list(task_map.values())
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Task).where(Task.id.in_(task_ids)))
+        tasks_by_id = {str(t.id): t.title for t in result.scalars().all()}
+
+    return {num: tasks_by_id.get(str(tid), "Unknown") for num, tid in task_map.items()}
 
 
 async def _handle_dump(text: str, update: Update):

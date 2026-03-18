@@ -53,7 +53,7 @@ async def process_input(text: str, update: Update, source: str = "text"):
 
     # Try command routing first
     from bot.commands import route_command
-    handled = await route_command(text, update, state)
+    handled = await route_command(text, update, state, source=source)
     if handled:
         # Save to conversation history for follow-ups, but cap command history
         # to prevent old commands from bleeding into new classifications
