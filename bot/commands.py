@@ -264,6 +264,8 @@ async def _dispatch_single_intent(result: dict, text: str, update: Update, state
         args = ""
         if result.get("show_all"):
             args = "all"
+        elif result.get("due"):
+            args = f"due:{result['due']}"
         elif result.get("project"):
             args = result["project"]
         await cmd_list(args, update, state)
@@ -513,10 +515,39 @@ async def cmd_list(args: str, update: Update, state: dict):
         query = select(Task).order_by(Task.due_date.asc().nullslast(), pri_order, Task.created_at)
 
         show_all = args.strip().lower() == "all"
-        project_filter = args.strip() if args.strip() and not show_all else None
+        due_filter = None
+        project_filter = None
+
+        if show_all:
+            pass
+        elif args.strip().lower().startswith("due:"):
+            due_filter = args.strip()[4:].strip()
+        elif args.strip():
+            project_filter = args.strip()
 
         if not show_all:
             query = query.where(Task.status.notin_(["done"]))
+
+        if due_filter:
+            # Parse due filter: "today", "this week", or "YYYY-MM-DD"
+            from datetime import timedelta
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            if due_filter.lower() == "today":
+                tomorrow = today_start + timedelta(days=1)
+                query = query.where(Task.due_date >= today_start, Task.due_date < tomorrow)
+            elif due_filter.lower() in ("this week", "week"):
+                # Monday through Sunday
+                days_since_monday = today_start.weekday()
+                week_start = today_start - timedelta(days=days_since_monday)
+                week_end = week_start + timedelta(days=7)
+                query = query.where(Task.due_date >= week_start, Task.due_date < week_end)
+            else:
+                try:
+                    target = datetime.strptime(due_filter, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    next_day = target + timedelta(days=1)
+                    query = query.where(Task.due_date >= target, Task.due_date < next_day)
+                except ValueError:
+                    pass  # ignore invalid date, show all
 
         if project_filter:
             query = query.where(Task.project.ilike(f"%{project_filter}%"))
@@ -528,7 +559,7 @@ async def cmd_list(args: str, update: Update, state: dict):
         tasks = result.scalars().all()
 
     if not tasks:
-        label = f" for '{project_filter}'" if project_filter else ""
+        label = f" due {due_filter}" if due_filter else (f" for '{project_filter}'" if project_filter else "")
         await update.message.reply_text(f"No tasks found{label}.")
         return
 
@@ -556,7 +587,12 @@ async def cmd_list(args: str, update: Update, state: dict):
     from bot.state import save_task_map
     await save_task_map(user_id, task_map)
 
-    header = "All tasks:" if show_all else "Open tasks:"
+    if show_all:
+        header = "All tasks:"
+    elif due_filter:
+        header = f"Tasks due {due_filter}:"
+    else:
+        header = "Open tasks:"
     await update.message.reply_text(f"{header}\n\n" + "\n".join(lines))
 
 

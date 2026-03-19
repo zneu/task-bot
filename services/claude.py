@@ -20,8 +20,11 @@ def get_response(system_prompt: str, messages: list, max_tokens: int = 500) -> s
 
 def chat(user_message: str, conversation_history: list) -> str:
     """General chat — Claude responds conversationally."""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%A, %Y-%m-%d")
     system = (
-        "You are an accountability partner. Be direct, warm, and brief. "
+        f"You are an accountability partner. Today is {today}. "
+        "Be direct, warm, and brief. "
         "Help the user stay focused and organized."
     )
     messages = conversation_history + [{"role": "user", "content": user_message}]
@@ -113,7 +116,7 @@ Tracked people: {people_str}
 
 Classify the user's message into ONE of these intents and return ONLY valid JSON:
 
-- {{"intent": "list"}} — user wants to see tasks. Optional: "project" (matched to known projects), "show_all" (true if they want done tasks too)
+- {{"intent": "list"}} — user wants to see tasks. Optional: "project" (matched to known projects), "show_all" (true if they want done tasks too), "due" (date filter like "today", "this week", or "YYYY-MM-DD" — resolve relative dates)
 - {{"intent": "done", "num": "N"}} — mark task #N as done
 - {{"intent": "doing", "num": "N"}} — mark task #N as in progress
 - {{"intent": "add", "title": "...", "priority": "high|medium|low", "project": "...", "due": "YYYY-MM-DD"}} — add a new task. Only include fields the user specified. Resolve relative dates (e.g. "Friday" → actual date).
