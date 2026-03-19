@@ -70,7 +70,7 @@ async def _show_updated_list(message, state: dict):
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Task).where(Task.status.notin_(["done"]))
-            .order_by(Task.due_date.asc().nullslast(), pri_order, Task.created_at)
+            .order_by(Task.project, Task.due_date.asc().nullslast(), pri_order, Task.created_at)
         )
         tasks = result.scalars().all()
 
@@ -81,14 +81,20 @@ async def _show_updated_list(message, state: dict):
     task_map = {}
     lines = []
     n = 1
+    current_project = "__UNSET__"
     for t in tasks:
+        proj = t.project or "No Project"
+        if proj != current_project:
+            if lines:
+                lines.append("")
+            lines.append(f"[{proj}]")
+            current_project = proj
         status_icon = {"not_started": "○", "in_progress": "◐", "done": "●", "avoided": "⊘"}.get(t.status, "○")
         pri_icon = {"high": "!", "medium": "", "low": "~"}.get(t.priority, "")
         due = ""
         if t.due_date:
             due = f" (due {t.due_date.strftime('%m/%d')})"
-        proj = f" [{t.project}]" if t.project else ""
-        lines.append(f"  {n}. {status_icon} {pri_icon}{t.title}{due}{proj}")
+        lines.append(f"  {n}. {status_icon} {pri_icon}{t.title}{due}")
         task_map[str(n)] = t.id
         n += 1
 
@@ -331,7 +337,7 @@ async def _ensure_task_map(state: dict, update: Update = None, user_id: str = No
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Task).where(Task.status.notin_(["done"]))
-            .order_by(Task.due_date.asc().nullslast(), pri_order, Task.created_at)
+            .order_by(Task.project, Task.due_date.asc().nullslast(), pri_order, Task.created_at)
         )
         tasks = result.scalars().all()
 
@@ -512,7 +518,7 @@ async def cmd_list(args: str, update: Update, state: dict):
     )
 
     async with AsyncSessionLocal() as session:
-        query = select(Task).order_by(Task.due_date.asc().nullslast(), pri_order, Task.created_at)
+        query = select(Task).order_by(Task.project, Task.due_date.asc().nullslast(), pri_order, Task.created_at)
 
         show_all = args.strip().lower() == "all"
         due_filter = None
@@ -563,20 +569,27 @@ async def cmd_list(args: str, update: Update, state: dict):
         await update.message.reply_text(f"No tasks found{label}.")
         return
 
-    # Build numbered list sorted by due date → priority
+    # Build numbered list grouped by project, sorted by due date within each
     task_map = {}
     lines = []
     n = 1
+    current_project = "__UNSET__"
 
     for task in tasks:
+        proj = task.project or "No Project"
+        if proj != current_project:
+            if lines:
+                lines.append("")
+            lines.append(f"[{proj}]")
+            current_project = proj
+
         status_icon = {"not_started": "○", "in_progress": "◐", "done": "●", "avoided": "⊘"}.get(task.status, "○")
         pri_icon = {"high": "!", "medium": "", "low": "~"}.get(task.priority, "")
         due = ""
         if task.due_date:
             due = f" (due {task.due_date.strftime('%m/%d')})"
-        proj = f" [{task.project}]" if task.project else ""
 
-        lines.append(f"  {n}. {status_icon} {pri_icon}{task.title}{due}{proj}")
+        lines.append(f"  {n}. {status_icon} {pri_icon}{task.title}{due}")
         task_map[str(n)] = task.id
         n += 1
 
