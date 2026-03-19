@@ -237,8 +237,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action_id = data.split(":", 1)[1]
         user_id = str(query.from_user.id)
         state = get_state(user_id)
-        state.get("pending_actions", {}).pop(action_id, None)
-        await query.message.reply_text("Cancelled.")
+        actions = state.get("pending_actions", {})
+        cancelled = actions.pop(action_id, None)
+        if cancelled:
+            desc = cancelled.get("type", "action")
+            await query.message.reply_text(f"Cancelled {desc}. What would you like to change?")
+        else:
+            await query.message.reply_text("Already handled.")
+        # Show list after all actions resolved
+        if not actions:
+            from bot.commands import _show_updated_list
+            await _show_updated_list(query.message, state)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
