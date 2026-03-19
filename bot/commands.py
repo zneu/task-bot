@@ -6,6 +6,101 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 logger = logging.getLogger(__name__)
 
 
+async def _confirm_action(action: dict, message: str, update: Update, state: dict):
+    """Store a pending action and show confirmation buttons."""
+    user_id = str(update.effective_user.id)
+    action["_user_id"] = user_id
+    state["pending_action"] = action
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Confirm", callback_data="confirm_action"),
+            InlineKeyboardButton("Cancel", callback_data="cancel_action"),
+        ]
+    ])
+    await update.message.reply_text(message, reply_markup=keyboard)
+
+
+async def execute_pending_action(state: dict, message):
+    """Execute a confirmed pending action and show updated task list."""
+    action = state.get("pending_action")
+    if not action:
+        await message.reply_text("Nothing to confirm.")
+        return
+
+    action_type = action["type"]
+
+    if action_type == "delete":
+        await _exec_delete(action, message, state)
+    elif action_type == "set_status":
+        await _exec_set_status(action, message)
+    elif action_type == "edit":
+        await _exec_edit(action, message)
+    elif action_type == "add":
+        await _exec_add(action, message)
+    elif action_type == "move":
+        await _exec_move(action, message, state)
+
+    state["pending_action"] = None
+
+    # Show updated task list
+    await _show_updated_list(message, state)
+
+
+async def _show_updated_list(message, state: dict):
+    """Show abbreviated task list after a mutation."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Task).where(Task.status.notin_(["done"]))
+            .order_by(Task.project, Task.created_at)
+        )
+        tasks = result.scalars().all()
+
+    if not tasks:
+        await message.reply_text("No open tasks.")
+        return
+
+    task_map = {}
+    lines = []
+    n = 1
+    current_project = "__UNSET__"
+    for t in tasks:
+        proj = t.project or "No Project"
+        if proj != current_project:
+            if lines:
+                lines.append("")
+            lines.append(f"[{proj}]")
+            current_project = proj
+        status_icon = {"not_started": "○", "in_progress": "◐", "done": "●", "avoided": "⊘"}.get(t.status, "○")
+        pri_icon = {"high": "!", "medium": "", "low": "~"}.get(t.priority, "")
+        due = ""
+        if t.due_date:
+            due = f" (due {t.due_date.strftime('%m/%d')})"
+        lines.append(f"  {n}. {status_icon} {pri_icon}{t.title}{due}")
+        task_map[str(n)] = t.id
+        n += 1
+
+    state["task_map"] = task_map
+
+    # Persist updated map
+    from bot.state import save_task_map
+    user_id = state.get("pending_action", {}).get("_user_id") if state.get("pending_action") else None
+    if not user_id:
+        # Fallback: look up user_id from state registry
+        from bot.state import user_states
+        for uid, s in user_states.items():
+            if s is state:
+                user_id = uid
+                break
+    if user_id:
+        await save_task_map(user_id, task_map)
+
+    await message.reply_text("Open tasks:\n\n" + "\n".join(lines))
+
+
 def _clean_num(raw: str) -> str:
     """Strip filler words from number arguments: 'task 19' → '19', 'number four' → '4'."""
     word_nums = {
@@ -438,10 +533,9 @@ async def cmd_doing(args: str, update: Update, state: dict):
 
 
 async def _set_status(args: str, status: str, update: Update, state: dict):
-    """Set task status by row number."""
+    """Set task status by row number — shows confirmation first."""
     from database.connection import AsyncSessionLocal
     from database.models import Task
-    from services.notion import push_task
     from sqlalchemy import select
 
     num = _clean_num(args)
@@ -456,12 +550,34 @@ async def _set_status(args: str, status: str, update: Update, state: dict):
         if not task:
             await update.message.reply_text("Task not found in database.")
             return
+        title = task.title
 
-        task.status = status
+    label = "Mark as done" if status == "done" else "Mark as in progress"
+    await _confirm_action(
+        {"type": "set_status", "task_id": task_id, "status": status, "num": num},
+        f"{label}: #{num} {title}?",
+        update, state,
+    )
+
+
+async def _exec_set_status(action: dict, message):
+    """Execute confirmed status change."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from services.notion import push_task
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Task).where(Task.id == action["task_id"]))
+        task = result.scalar_one_or_none()
+        if not task:
+            await message.reply_text("Task not found in database.")
+            return
+        task.status = action["status"]
         push_task(task)
         await session.commit()
-        label = "Done" if status == "done" else "In progress"
-        await update.message.reply_text(f"{label}: {task.title}")
+        label = "Done" if action["status"] == "done" else "In progress"
+        await message.reply_text(f"{label}: {task.title}")
 
 
 async def _set_status_by_id(task_id: str, status: str, message):
@@ -496,9 +612,6 @@ async def _set_status_from_callback(num: str, status: str, message, state: dict)
 
 async def cmd_add(args: str, update: Update, state: dict):
     """Quick-add a task from prefix syntax. Usage: add Buy groceries p:high proj:Home due:2026-03-15"""
-    from database.connection import AsyncSessionLocal
-    from database.models import Task
-    from services.notion import push_task
 
     if not args.strip():
         await update.message.reply_text("Usage: /add Task title p:high proj:Project due:YYYY-MM-DD")
@@ -536,7 +649,7 @@ async def cmd_add(args: str, update: Update, state: dict):
         await update.message.reply_text("Task needs a title.")
         return
 
-    await _create_task(title, priority, project, due_date, update)
+    await _create_task(title, priority, project, due_date, update, state)
 
 
 async def _cmd_add_structured(result: dict, update: Update, state: dict):
@@ -555,20 +668,46 @@ async def _cmd_add_structured(result: dict, update: Update, state: dict):
         except ValueError:
             pass
 
-    await _create_task(title, priority, project, due_date, update)
+    await _create_task(title, priority, project, due_date, update, state)
 
 
-async def _create_task(title: str, priority: str, project: str | None, due_date: datetime | None, update: Update):
-    """Shared task creation logic."""
+async def _create_task(title: str, priority: str, project: str | None, due_date: datetime | None, update: Update, state: dict = None):
+    """Shared task creation logic — shows confirmation first."""
+    user_id = str(update.effective_user.id)
+    if state is None:
+        from bot.state import get_state
+        state = get_state(user_id)
+
+    parts = [f"Add: {title}"]
+    if priority != "medium":
+        parts.append(f"  Priority: {priority}")
+    if project:
+        parts.append(f"  Project: {project}")
+    if due_date:
+        parts.append(f"  Due: {due_date.strftime('%Y-%m-%d')}")
+
+    await _confirm_action(
+        {"type": "add", "title": title, "priority": priority, "project": project, "due": due_date.strftime('%Y-%m-%d') if due_date else None},
+        "\n".join(parts) + "?",
+        update, state,
+    )
+
+
+async def _exec_add(action: dict, message):
+    """Execute confirmed add."""
     from database.connection import AsyncSessionLocal
     from database.models import Task
     from services.notion import push_task
 
+    due_date = None
+    if action.get("due"):
+        due_date = datetime.strptime(action["due"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
     async with AsyncSessionLocal() as session:
         task = Task(
-            title=title,
-            priority=priority,
-            project=project,
+            title=action["title"],
+            priority=action.get("priority", "medium"),
+            project=action.get("project"),
             due_date=due_date,
             status="not_started",
         )
@@ -579,14 +718,14 @@ async def _create_task(title: str, priority: str, project: str | None, due_date:
             task.notion_id = notion_id
         await session.commit()
 
-    parts = [f"Added: {title}"]
-    if priority != "medium":
-        parts.append(f"  Priority: {priority}")
-    if project:
-        parts.append(f"  Project: {project}")
-    if due_date:
-        parts.append(f"  Due: {due_date.strftime('%Y-%m-%d')}")
-    await update.message.reply_text("\n".join(parts))
+    parts = [f"Added: {action['title']}"]
+    if action.get("priority", "medium") != "medium":
+        parts.append(f"  Priority: {action['priority']}")
+    if action.get("project"):
+        parts.append(f"  Project: {action['project']}")
+    if action.get("due"):
+        parts.append(f"  Due: {action['due']}")
+    await message.reply_text("\n".join(parts))
 
 
 async def cmd_edit(args: str, update: Update, state: dict):
@@ -617,7 +756,7 @@ async def cmd_edit(args: str, update: Update, state: dict):
     field = field_match.group(1).lower()
     value = field_match.group(2).strip()
 
-    await _apply_edit(num, task_id, field, value, update)
+    await _apply_edit(num, task_id, field, value, update, state)
 
 
 async def _cmd_edit_structured(result: dict, update: Update, state: dict):
@@ -635,34 +774,57 @@ async def _cmd_edit_structured(result: dict, update: Update, state: dict):
         await update.message.reply_text("Couldn't figure out what to change. Try: /edit N field: value")
         return
 
-    await _apply_edit(num, task_id, field, value, update)
+    await _apply_edit(num, task_id, field, value, update, state)
 
 
-async def _apply_edit(num: str, task_id: str, field: str, value: str, update: Update):
-    """Shared edit logic."""
-    from database.connection import AsyncSessionLocal
-    from database.models import Task
-    from services.notion import push_task
-    from sqlalchemy import select
-
+async def _apply_edit(num: str, task_id: str, field: str, value: str, update: Update, state: dict = None):
+    """Shared edit logic — shows confirmation first."""
     allowed = {"title", "priority", "project", "due", "notes"}
     if field not in allowed:
         await update.message.reply_text(f"Unknown field '{field}'. Allowed: {', '.join(sorted(allowed))}")
         return
 
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Task).where(Task.id == task_id))
-        task = result.scalar_one_or_none()
-        if not task:
-            await update.message.reply_text("Task not found in database.")
+    if field == "priority" and value.lower() not in ("high", "medium", "low"):
+        await update.message.reply_text("Priority must be high, medium, or low.")
+        return
+
+    if field == "due" and value.lower() != "none":
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            await update.message.reply_text("Date format: YYYY-MM-DD (or 'none' to clear)")
             return
 
+    user_id = str(update.effective_user.id)
+    if state is None:
+        from bot.state import get_state
+        state = get_state(user_id)
+
+    await _confirm_action(
+        {"type": "edit", "task_id": task_id, "num": num, "field": field, "value": value},
+        f"Update #{num} {field} → {value}?",
+        update, state,
+    )
+
+
+async def _exec_edit(action: dict, message):
+    """Execute confirmed edit."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from services.notion import push_task
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Task).where(Task.id == action["task_id"]))
+        task = result.scalar_one_or_none()
+        if not task:
+            await message.reply_text("Task not found in database.")
+            return
+
+        field, value = action["field"], action["value"]
         if field == "title":
             task.title = value
         elif field == "priority":
-            if value.lower() not in ("high", "medium", "low"):
-                await update.message.reply_text("Priority must be high, medium, or low.")
-                return
             task.priority = value.lower()
         elif field == "project":
             task.project = value if value.lower() != "none" else None
@@ -670,24 +832,19 @@ async def _apply_edit(num: str, task_id: str, field: str, value: str, update: Up
             if value.lower() == "none":
                 task.due_date = None
             else:
-                try:
-                    task.due_date = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                except ValueError:
-                    await update.message.reply_text("Date format: YYYY-MM-DD (or 'none' to clear)")
-                    return
+                task.due_date = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         elif field == "notes":
             task.notes = value if value.lower() != "none" else None
 
         push_task(task)
         await session.commit()
-        await update.message.reply_text(f"Updated #{num} {field} → {value}")
+        await message.reply_text(f"Updated #{action['num']} {field} → {value}")
 
 
 async def cmd_delete(args: str, update: Update, state: dict):
-    """Delete a task. Usage: delete N"""
+    """Delete a task. Usage: delete N — shows confirmation first."""
     from database.connection import AsyncSessionLocal
     from database.models import Task
-    from services.notion import archive_task
     from sqlalchemy import select
 
     num = _clean_num(args)
@@ -702,28 +859,43 @@ async def cmd_delete(args: str, update: Update, state: dict):
         if not task:
             await update.message.reply_text("Task not found in database.")
             return
+        title = task.title
+
+    await _confirm_action(
+        {"type": "delete", "task_id": task_id, "num": num},
+        f"Delete #{num} '{title}'?",
+        update, state,
+    )
+
+
+async def _exec_delete(action: dict, message, state: dict):
+    """Execute confirmed delete."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from services.notion import archive_task
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Task).where(Task.id == action["task_id"]))
+        task = result.scalar_one_or_none()
+        if not task:
+            await message.reply_text("Task not found in database.")
+            return
 
         title = task.title
         notion_id = task.notion_id
-
         await session.delete(task)
         await session.commit()
 
     if notion_id:
         archive_task(notion_id)
 
-    # Remove from task_map
-    state.get("task_map", {}).pop(num, None)
-
-    await update.message.reply_text(f"Deleted: {title}")
+    state.get("task_map", {}).pop(action["num"], None)
+    await message.reply_text(f"Deleted: {title}")
 
 
 async def cmd_move(args: str, update: Update, state: dict):
-    """Move tasks to a project. Usage: move 1,3,5 to Project Name"""
-    from database.connection import AsyncSessionLocal
-    from database.models import Task
-    from services.notion import push_task
-    from sqlalchemy import select
+    """Move tasks to a project. Usage: move 1,3,5 to Project Name — shows confirmation first."""
 
     # Parse: "1, 3, 5 to Project Name" or "1 3 5 Project Name"
     m = re.match(r'([\d,\s]+)\s+(?:to\s+)?(.+)', args.strip())
@@ -745,23 +917,39 @@ async def cmd_move(args: str, update: Update, state: dict):
         await update.message.reply_text(f"Invalid task number(s): {', '.join(invalid)}. Use /list first.")
         return
 
+    task_ids = {n: task_map[n] for n in numbers}
     project_value = project if project.lower() != "none" else None
-    moved = []
+    label = f"Move {len(numbers)} task(s) to {project}?" if project_value else f"Remove project from {len(numbers)} task(s)?"
 
+    await _confirm_action(
+        {"type": "move", "task_ids": task_ids, "project": project_value, "project_display": project},
+        label, update, state,
+    )
+
+
+async def _exec_move(action: dict, message, state: dict):
+    """Execute confirmed move."""
+    from database.connection import AsyncSessionLocal
+    from database.models import Task
+    from services.notion import push_task
+    from sqlalchemy import select
+
+    moved = []
     async with AsyncSessionLocal() as session:
-        for n in numbers:
-            result = await session.execute(select(Task).where(Task.id == task_map[n]))
+        for n, tid in action["task_ids"].items():
+            result = await session.execute(select(Task).where(Task.id == tid))
             task = result.scalar_one_or_none()
             if task:
-                task.project = project_value
+                task.project = action["project"]
                 push_task(task)
                 moved.append(task.title)
         await session.commit()
 
-    if project_value:
-        await update.message.reply_text(f"Moved {len(moved)} task(s) to {project}:\n" + "\n".join(f"  - {t}" for t in moved))
+    project = action["project_display"]
+    if action["project"]:
+        await message.reply_text(f"Moved {len(moved)} task(s) to {project}:\n" + "\n".join(f"  - {t}" for t in moved))
     else:
-        await update.message.reply_text(f"Removed project from {len(moved)} task(s):\n" + "\n".join(f"  - {t}" for t in moved))
+        await message.reply_text(f"Removed project from {len(moved)} task(s):\n" + "\n".join(f"  - {t}" for t in moved))
 
 
 async def cmd_people(args: str, update: Update, state: dict):

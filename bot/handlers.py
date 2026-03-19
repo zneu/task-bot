@@ -226,6 +226,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_pending(user_id)
         await query.message.reply_text("Discarded.")
 
+    elif data == "confirm_action":
+        user_id = str(query.from_user.id)
+        state = get_state(user_id)
+        if state.get("pending_action"):
+            from bot.commands import execute_pending_action
+            await execute_pending_action(state, query.message)
+        else:
+            await query.message.reply_text("Nothing to confirm.")
+
+    elif data == "cancel_action":
+        user_id = str(query.from_user.id)
+        state = get_state(user_id)
+        state["pending_action"] = None
+        await query.message.reply_text("Cancelled.")
+
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
