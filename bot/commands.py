@@ -84,11 +84,12 @@ async def route_command(text: str, update: Update, state: dict, source: str = "t
             # Natural language add: let Claude parse project/context references
             if prefix == "add" and re.search(r'\b(under|back|for the|to the|in the|into)\b', args.lower()):
                 break
-            # Voice: skip fast path unless args are a clean number or word-number
-            # This routes "delete that task about groceries" to Claude
+            # Voice: skip fast path unless args are basically just a number
+            # "delete 3" or "done one please" → fast path (≤3 words, clean digit)
+            # "edit task 11 to say confirm ecstatic dance" → Claude (long natural language)
             if source == "voice" and requires_args:
                 clean = _clean_num(args)
-                if not clean.isdigit():
+                if not clean.isdigit() or len(args.split()) > 3:
                     break
             if prefix == "dump":
                 if args:
