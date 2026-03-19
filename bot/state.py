@@ -7,6 +7,7 @@ def get_state(user_id: str) -> dict:
             "mode": "idle",
             "conversation_history": [],
             "pending_items": None,
+            "pending_action": None,
             "task_map": {},
         }
     return user_states[user_id]
