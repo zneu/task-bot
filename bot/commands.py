@@ -10,19 +10,28 @@ async def _confirm_action(action: dict, message: str, update: Update, state: dic
     """Store a pending action and show confirmation buttons."""
     user_id = str(update.effective_user.id)
     action["_user_id"] = user_id
-    state["pending_action"] = action
+
+    # Use incrementing IDs so compound commands each get their own button
+    if "pending_actions" not in state:
+        state["pending_actions"] = {}
+    counter = state.get("_action_counter", 0) + 1
+    state["_action_counter"] = counter
+    action_id = str(counter)
+    state["pending_actions"][action_id] = action
+
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Confirm", callback_data="confirm_action"),
-            InlineKeyboardButton("Cancel", callback_data="cancel_action"),
+            InlineKeyboardButton("Confirm", callback_data=f"confirm:{action_id}"),
+            InlineKeyboardButton("Cancel", callback_data=f"cancel:{action_id}"),
         ]
     ])
     await update.message.reply_text(message, reply_markup=keyboard)
 
 
-async def execute_pending_action(state: dict, message):
+async def execute_pending_action(action_id: str, state: dict, message):
     """Execute a confirmed pending action and show updated task list."""
-    action = state.get("pending_action")
+    actions = state.get("pending_actions", {})
+    action = actions.pop(action_id, None)
     if not action:
         await message.reply_text("Nothing to confirm.")
         return
@@ -40,22 +49,28 @@ async def execute_pending_action(state: dict, message):
     elif action_type == "move":
         await _exec_move(action, message, state)
 
-    state["pending_action"] = None
-
-    # Show updated task list
-    await _show_updated_list(message, state)
+    # Show updated task list only after the last pending action
+    if not actions:
+        await _show_updated_list(message, state)
 
 
 async def _show_updated_list(message, state: dict):
     """Show abbreviated task list after a mutation."""
     from database.connection import AsyncSessionLocal
     from database.models import Task
-    from sqlalchemy import select
+    from sqlalchemy import select, case
+
+    pri_order = case(
+        (Task.priority == "high", 1),
+        (Task.priority == "medium", 2),
+        (Task.priority == "low", 3),
+        else_=4,
+    )
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Task).where(Task.status.notin_(["done"]))
-            .order_by(Task.project, Task.created_at)
+            .order_by(Task.due_date.asc().nullslast(), pri_order, Task.created_at)
         )
         tasks = result.scalars().all()
 
@@ -66,35 +81,26 @@ async def _show_updated_list(message, state: dict):
     task_map = {}
     lines = []
     n = 1
-    current_project = "__UNSET__"
     for t in tasks:
-        proj = t.project or "No Project"
-        if proj != current_project:
-            if lines:
-                lines.append("")
-            lines.append(f"[{proj}]")
-            current_project = proj
         status_icon = {"not_started": "○", "in_progress": "◐", "done": "●", "avoided": "⊘"}.get(t.status, "○")
         pri_icon = {"high": "!", "medium": "", "low": "~"}.get(t.priority, "")
         due = ""
         if t.due_date:
             due = f" (due {t.due_date.strftime('%m/%d')})"
-        lines.append(f"  {n}. {status_icon} {pri_icon}{t.title}{due}")
+        proj = f" [{t.project}]" if t.project else ""
+        lines.append(f"  {n}. {status_icon} {pri_icon}{t.title}{due}{proj}")
         task_map[str(n)] = t.id
         n += 1
 
     state["task_map"] = task_map
 
     # Persist updated map
-    from bot.state import save_task_map
-    user_id = state.get("pending_action", {}).get("_user_id") if state.get("pending_action") else None
-    if not user_id:
-        # Fallback: look up user_id from state registry
-        from bot.state import user_states
-        for uid, s in user_states.items():
-            if s is state:
-                user_id = uid
-                break
+    from bot.state import save_task_map, user_states
+    user_id = None
+    for uid, s in user_states.items():
+        if s is state:
+            user_id = uid
+            break
     if user_id:
         await save_task_map(user_id, task_map)
 
@@ -311,12 +317,19 @@ async def _ensure_task_map(state: dict, update: Update = None, user_id: str = No
 
     from database.connection import AsyncSessionLocal
     from database.models import Task
-    from sqlalchemy import select
+    from sqlalchemy import select, case
+
+    pri_order = case(
+        (Task.priority == "high", 1),
+        (Task.priority == "medium", 2),
+        (Task.priority == "low", 3),
+        else_=4,
+    )
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Task).where(Task.status.notin_(["done"]))
-            .order_by(Task.project, Task.created_at)
+            .order_by(Task.due_date.asc().nullslast(), pri_order, Task.created_at)
         )
         tasks = result.scalars().all()
 
@@ -337,6 +350,28 @@ async def _ensure_task_map(state: dict, update: Update = None, user_id: str = No
         if len(tasks) > 8:
             brief += f"\n  ... and {len(tasks) - 8} more"
         await update.message.reply_text(f"Your tasks:\n{brief}")
+
+
+async def _push_overdue_tasks(session):
+    """Push overdue tasks to today. Called during list operations."""
+    from database.models import Task
+    from services.notion import push_task
+    from sqlalchemy import select
+
+    today = datetime.now(timezone.utc).replace(hour=23, minute=59, second=59)
+    result = await session.execute(
+        select(Task).where(
+            Task.due_date < datetime.now(timezone.utc).replace(hour=0, minute=0, second=0),
+            Task.status.notin_(["done"]),
+        )
+    )
+    overdue = result.scalars().all()
+    if overdue:
+        today_end = datetime.now(timezone.utc).replace(hour=23, minute=59, second=59)
+        for task in overdue:
+            task.due_date = today_end
+            push_task(task)
+        await session.commit()
 
 
 async def _get_task_context() -> tuple[list[str], str]:
@@ -465,10 +500,17 @@ async def cmd_list(args: str, update: Update, state: dict):
     """List tasks. Usage: list [all|project_name]"""
     from database.connection import AsyncSessionLocal
     from database.models import Task
-    from sqlalchemy import select
+    from sqlalchemy import select, case
+
+    pri_order = case(
+        (Task.priority == "high", 1),
+        (Task.priority == "medium", 2),
+        (Task.priority == "low", 3),
+        else_=4,
+    )
 
     async with AsyncSessionLocal() as session:
-        query = select(Task).order_by(Task.project, Task.created_at)
+        query = select(Task).order_by(Task.due_date.asc().nullslast(), pri_order, Task.created_at)
 
         show_all = args.strip().lower() == "all"
         project_filter = args.strip() if args.strip() and not show_all else None
@@ -479,6 +521,9 @@ async def cmd_list(args: str, update: Update, state: dict):
         if project_filter:
             query = query.where(Task.project.ilike(f"%{project_filter}%"))
 
+        # Auto-push overdue tasks to today
+        await _push_overdue_tasks(session)
+
         result = await session.execute(query)
         tasks = result.scalars().all()
 
@@ -487,27 +532,20 @@ async def cmd_list(args: str, update: Update, state: dict):
         await update.message.reply_text(f"No tasks found{label}.")
         return
 
-    # Build numbered list grouped by project
+    # Build numbered list sorted by due date → priority
     task_map = {}
     lines = []
     n = 1
-    current_project = "__UNSET__"
 
     for task in tasks:
-        proj = task.project or "No Project"
-        if proj != current_project:
-            if lines:
-                lines.append("")
-            lines.append(f"[{proj}]")
-            current_project = proj
-
         status_icon = {"not_started": "○", "in_progress": "◐", "done": "●", "avoided": "⊘"}.get(task.status, "○")
         pri_icon = {"high": "!", "medium": "", "low": "~"}.get(task.priority, "")
         due = ""
         if task.due_date:
             due = f" (due {task.due_date.strftime('%m/%d')})"
+        proj = f" [{task.project}]" if task.project else ""
 
-        lines.append(f"  {n}. {status_icon} {pri_icon}{task.title}{due}")
+        lines.append(f"  {n}. {status_icon} {pri_icon}{task.title}{due}{proj}")
         task_map[str(n)] = task.id
         n += 1
 

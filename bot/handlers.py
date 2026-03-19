@@ -226,19 +226,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_pending(user_id)
         await query.message.reply_text("Discarded.")
 
-    elif data == "confirm_action":
+    elif data.startswith("confirm:"):
+        action_id = data.split(":", 1)[1]
         user_id = str(query.from_user.id)
         state = get_state(user_id)
-        if state.get("pending_action"):
-            from bot.commands import execute_pending_action
-            await execute_pending_action(state, query.message)
-        else:
-            await query.message.reply_text("Nothing to confirm.")
+        from bot.commands import execute_pending_action
+        await execute_pending_action(action_id, state, query.message)
 
-    elif data == "cancel_action":
+    elif data.startswith("cancel:"):
+        action_id = data.split(":", 1)[1]
         user_id = str(query.from_user.id)
         state = get_state(user_id)
-        state["pending_action"] = None
+        state.get("pending_actions", {}).pop(action_id, None)
         await query.message.reply_text("Cancelled.")
 
 
