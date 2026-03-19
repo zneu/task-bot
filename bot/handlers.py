@@ -55,11 +55,10 @@ async def process_input(text: str, update: Update, source: str = "text"):
     from bot.commands import route_command
     handled = await route_command(text, update, state, source=source)
     if handled:
-        # Save to conversation history for follow-ups, but cap command history
-        # to prevent old commands from bleeding into new classifications
-        add_to_history(user_id, "user", text)
-        if len(state["conversation_history"]) > 2:
-            state["conversation_history"] = state["conversation_history"][-2:]
+        # Don't add commands to conversation history — they get re-executed
+        # by the classifier if they appear in history context. Only chat
+        # messages (below) should persist for follow-up context.
+        state["conversation_history"] = []
         return
 
     # Default: chat (with task context)
