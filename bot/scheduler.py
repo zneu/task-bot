@@ -72,10 +72,22 @@ async def afternoon_checkin(telegram_app):
         await telegram_app.bot.send_message(chat_id, "No open tasks. Enjoy your afternoon.")
         return
 
+    # Sort by priority (high first), then by avoided_count descending
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    tasks.sort(key=lambda t: (priority_order.get(t.priority, 1), -t.avoided_count))
+
+    # Sync task_map so "complete 1" hits the right task
+    task_map = {str(i + 1): t.id for i, t in enumerate(tasks)}
+    from bot.state import get_state, save_task_map
+    state = get_state(AUTHORIZED_USER_ID)
+    state["task_map"] = task_map
+    await save_task_map(AUTHORIZED_USER_ID, task_map)
+
     task_list = "\n".join(
-        f"- {t.title} (priority: {t.priority}, status: {t.status})"
+        f"- [{i+1}] {t.title} (priority: {t.priority}, status: {t.status})"
+        + (f", due: {t.due_date.strftime('%Y-%m-%d')}" if t.due_date else "")
         + (f" [project: {t.project}]" if t.project else "")
-        for t in tasks
+        for i, t in enumerate(tasks)
     )
 
     system = (PROMPTS_DIR / "afternoon.txt").read_text()
@@ -101,11 +113,23 @@ async def evening_checkin(telegram_app):
         await telegram_app.bot.send_message(chat_id, "No open tasks. Nice work today.")
         return
 
+    # Sort by priority (high first), then by avoided_count descending
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    tasks.sort(key=lambda t: (priority_order.get(t.priority, 1), -t.avoided_count))
+
+    # Sync task_map so references match displayed order
+    task_map = {str(i + 1): t.id for i, t in enumerate(tasks)}
+    from bot.state import get_state, save_task_map
+    state = get_state(AUTHORIZED_USER_ID)
+    state["task_map"] = task_map
+    await save_task_map(AUTHORIZED_USER_ID, task_map)
+
     system = (PROMPTS_DIR / "evening.txt").read_text()
     task_list = "\n".join(
-        f"- {t.title} (priority: {t.priority}, status: {t.status})"
+        f"- [{i+1}] {t.title} (priority: {t.priority}, status: {t.status})"
+        + (f", due: {t.due_date.strftime('%Y-%m-%d')}" if t.due_date else "")
         + (f" [project: {t.project}]" if t.project else "")
-        for t in tasks
+        for i, t in enumerate(tasks)
     )
     user_msg = f"Here are my open tasks:\n\n{task_list}"
 

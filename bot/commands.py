@@ -173,6 +173,11 @@ async def route_command(text: str, update: Update, state: dict, source: str = "t
     """
     lower = text.strip().lower()
 
+    # Clear stale pending actions from previous commands so the
+    # "show list after last action" check isn't blocked by old entries
+    state.pop("pending_actions", None)
+    state.pop("_action_counter", None)
+
     # Auto-populate task_map if empty
     # Suppress auto-show for /list since it will display its own full list
     user_id = str(update.effective_user.id)
@@ -190,6 +195,9 @@ async def route_command(text: str, update: Update, state: dict, source: str = "t
                 break
             # Natural language add: let Claude parse project/context references
             if prefix == "add" and re.search(r'\b(under|back|for the|to the|in the|into)\b', args.lower()):
+                break
+            # Edit: only fast-path "N field: value" — natural language goes to Claude
+            if prefix == "edit" and not re.match(r'^\d+\s+\w+:', args.strip()):
                 break
             # Voice: skip fast path unless args are basically just a number
             # "delete 3" or "done one please" → fast path (≤3 words, clean digit)
