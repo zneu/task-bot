@@ -240,8 +240,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         actions = state.get("pending_actions", {})
         cancelled = actions.pop(action_id, None)
         if cancelled:
-            desc = cancelled.get("type", "action")
-            await query.message.reply_text(f"Cancelled {desc}. What would you like to change?")
+            await query.message.reply_text("Cancelled.")
         else:
             await query.message.reply_text("Already handled.")
         # Show list after all actions resolved
